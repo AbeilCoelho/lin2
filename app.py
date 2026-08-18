@@ -96,7 +96,9 @@ def dashboard():
         cde_completed = True
         
         for _, row in group.iterrows():
-            app_code, table, col = str(row.get("Current app code", "")).strip(), str(row.get("Current table/file name", "")).strip(), str(row.get("Current column/field name", "")).strip()
+            app_code = str(row.get("Current app code", "")).strip()
+            table = str(row.get("Current table/file name", "")).strip()
+            col = str(row.get("Current column/field name", "")).strip()
             key = f"{cde_name}|{app_code}|{table}|{col}"
             
             if key in done_keys:
@@ -156,20 +158,29 @@ def search_dataframe(df, app_code, table, col):
     app_code, table, col = str(app_code).strip().upper(), str(table).strip().upper(), str(col).strip().upper()
     if not app_code or app_code == 'NAN' or not table or table == 'NAN' or not col or col == 'NAN': return pd.DataFrame(), "No Match"
 
-    df['clean_app'], df['clean_table'], df['clean_col'] = df.get('Current app code', '').astype(str).str.strip().str.upper(), df.get('Current table/file name', '').astype(str).str.strip().str.upper(), df.get('Current column/field name', '').astype(str).str.strip().str.upper()
+    # FIXED: Bulletproof Pandas string conversion to avoid 'nan' string poisoning
+    for c in ['Current app code', 'Current table/file name', 'Current column/field name']:
+        if c not in df.columns: df[c] = ""
+        df[c] = df[c].fillna("").astype(str).str.strip().str.upper()
+
+    df['clean_app'] = df['Current app code']
+    df['clean_table'] = df['Current table/file name']
+    df['clean_col'] = df['Current column/field name']
 
     exact = df[(df['clean_app'] == app_code) & (df['clean_table'] == table) & (df['clean_col'] == col)]
     if not exact.empty: return exact, "Exact Match"
 
-    df['flex_table'], df['flex_col'] = df['clean_table'].apply(flexible_normalize), df['clean_col'].apply(flexible_normalize)
+    df['flex_table'] = df['clean_table'].apply(flexible_normalize)
+    df['flex_col'] = df['clean_col'].apply(flexible_normalize)
     normalized_table, normalized_col = flexible_normalize(table), flexible_normalize(col)
+    
     flex = df[(df['clean_app'] == app_code) & (df['flex_table'] == normalized_table) & (df['flex_col'] == normalized_col)]
     if not flex.empty: return flex, "Flexible Match"
 
     app_filtered = df[df['clean_app'] == app_code]
     if app_filtered.empty: return pd.DataFrame(), "No Match"
 
-    choices_list = [f"{row['clean_table']} | {row['clean_col']}" for _, row in app_filtered[['clean_table', 'clean_col']].drop_duplicates().iterrows()]
+    choices_list = [f"{r['clean_table']} | {r['clean_col']}" for _, r in app_filtered[['clean_table', 'clean_col']].drop_duplicates().iterrows()]
     close_matches = difflib.get_close_matches(f"{table} | {col}", choices_list, n=5, cutoff=0.3)
 
     if close_matches:
@@ -211,7 +222,7 @@ def execute_search_api_logic(cde_name, app_code, table, col, target_apps):
                 if src_app and src_app != 'NAN':
                     raw_rows.append({
                         "next_app": src_app, "next_table": str(row.get('Source table/file name', '')).strip(), "next_col": str(row.get('Source column/field name', '')).strip(),
-                        "searched_table": table, "found_table": str(rep_row.get('Current table/file name', '')), "searched_col": col, "found_col": str(rep_row.get('Current column/field name', '')),
+                        "searched_table": table, "found_table": str(rep_row.get('Current table/file name', '')).strip(), "searched_col": col, "found_col": str(rep_row.get('Current column/field name', '')).strip(),
                         "match_type": match_type, "raw_row_data": row.drop(labels=['clean_app', 'clean_table', 'clean_col', 'flex_table', 'flex_col', 'group_id'], errors='ignore').fillna('').to_dict()
                     })
 
@@ -298,7 +309,7 @@ def save_lineage():
     return jsonify({"status": "success", "redirect": url_for('dashboard')})
 
 # --- UNIFIED BACKGROUND JOB ENGINE ---
-def process_instance_background(cde_name, target_key):
+def process_instance_background(cde_name, target_key, initial_raw_data=None):
     try:
         cde_path = os.path.join(app.config['UPLOAD_FOLDER'], 'reporting_layers.xlsx')
         
@@ -310,17 +321,16 @@ def process_instance_background(cde_name, target_key):
         for _, row in df[df['CDE name'] == cde_name].iterrows():
             target_apps.extend([t.strip().upper() for t in str(row.get("Target App Codes", "")).split(',') if t.strip()])
         
-        # Safely fetch state
         state = load_state()
         stack = state.get(target_key, {}).get('stack', [])
         
         if not stack:
             _, app_code, table, col = target_key.split('|')
-            stack = [{"app": app_code, "original_table": table, "original_col": col, "reconciled_table": table, "reconciled_col": col, "raw_data": {}}]
+            # FIXED: Passes the actual App Name and metadata to the very first reporting node!
+            stack = [{"app": app_code, "original_table": table, "original_col": col, "reconciled_table": table, "reconciled_col": col, "raw_data": initial_raw_data or {}}]
             
         update_state_for_key(target_key, {"status": "PROCESSING", "stack": stack, "timestamp": str(datetime.now())})
 
-        # BREADTH FIRST SEARCH QUEUE (Handles Infinite Branches Automatically!)
         stacks_to_process = [stack]
         completed_paths = []
 
@@ -330,20 +340,17 @@ def process_instance_background(cde_name, target_key):
             
             candidates = execute_search_api_logic(cde_name, current_node['app'], current_node.get('original_table', current_node.get('reconciled_table')), current_node.get('original_col', current_node.get('reconciled_col')), target_apps)
 
-            # 1. DEAD END -> Auto-Resolve this branch
             if len(candidates) == 0:
                 completed_paths.append((current_stack, True))
                 continue
 
             best_cand = candidates[0]
 
-            # 2. FUZZY MATCH -> STOP! Needs Human to pick standardization.
             if best_cand['match_type'] == 'Fuzzy Match':
                 reason = f"Fuzzy Match detected for '{current_node.get('original_table')}'. Human review required."
                 update_state_for_key(target_key, {"status": "NEEDS_REVIEW", "stack": current_stack, "reason": reason, "timestamp": str(datetime.now())})
                 return
 
-            # 3. EXACT OR FLEXIBLE MATCH -> Automatically Process ALL Sources (Branches)
             for src in best_cand['raw_rows']:
                 new_stack = copy.deepcopy(current_stack)
                 new_stack[-1]['reconciled_table'] = best_cand['found_table']
@@ -361,14 +368,12 @@ def process_instance_background(cde_name, target_key):
                 }
                 new_stack.append(new_node)
 
-                # Check if we hit the target system
                 if next_app in target_apps:
                     new_stack[-1]['notes'] = "Target Reached (Auto-Resolved)"
                     completed_paths.append((new_stack, False))
                 else:
                     stacks_to_process.append(new_stack)
 
-        # If the queue is empty, ALL branches successfully mapped!
         for path, is_dead_end in completed_paths:
             write_lineage_to_files(cde_name, path, is_dead_end)
 
@@ -399,9 +404,10 @@ def start_auto_resolve():
         
         key = f"{c_name}|{c_app}|{c_tab}|{c_col}"
         
-        # Automatically restart stuck "PROCESSING" jobs in addition to "PENDING"
         if key not in done_keys and state.get(key, {}).get("status") != "NEEDS_REVIEW":
-            executor.submit(process_instance_background, c_name, key)
+            # Extract raw data to pass App Name properly!
+            raw_data = row.fillna("").to_dict()
+            executor.submit(process_instance_background, c_name, key, raw_data)
             
     return jsonify({"status": "Bulk job started"})
 
@@ -409,7 +415,14 @@ def start_auto_resolve():
 def start_single_auto_resolve():
     data = request.json
     target_key = f"{data['cde_name']}|{data['app']}|{data['table']}|{data['column']}"
-    executor.submit(process_instance_background, data['cde_name'], target_key)
+    
+    # We do a quick fetch of the row to give it the App Name
+    with file_lock:
+        df = pd.read_excel(os.path.join(app.config['UPLOAD_FOLDER'], 'reporting_layers.xlsx'), 'Sheet1')
+        row = df[(df['CDE name'] == data['cde_name']) & (df['Current app code'] == data['app'])].iloc[0]
+        raw_data = row.fillna("").to_dict()
+        
+    executor.submit(process_instance_background, data['cde_name'], target_key, raw_data)
     return jsonify({"status": "Single instance job started"})
 
 @app.route('/api/auto_resolve/resume', methods=['POST'])
@@ -446,16 +459,19 @@ def api_graph(cde_name):
             c_app = str(row.get('Current app code', '')).strip().upper()
             if not c_app or c_app.lower() == 'nan': continue
             
-            c_name = str(row.get('Current app name', '')).strip() or c_app
+            c_name_val = str(row.get('Current app name', '')).strip()
+            c_name = c_name_val if c_name_val.lower() not in ['nan', ''] else c_app
+            
             c_tab = str(row.get('Current table/file name', '')).strip()
             c_col = str(row.get('Current column/field name', '')).strip()
             
             s_app = str(row.get('Source app code', '')).strip().upper()
-            s_name = str(row.get('Source app name', '')).strip() or s_app
+            s_name_val = str(row.get('Source app name', '')).strip()
+            s_name = s_name_val if s_name_val.lower() not in ['nan', ''] else s_app
+            
             s_tab = str(row.get('Source table/file name', '')).strip()
             s_col = str(row.get('Source column/field name', '')).strip()
 
-            # Identify node characteristics
             is_manual = 'manual' in str(row.get('Manually entered/Derived', '')).lower() or 'manual' in str(row.get('Created/Sourced', '')).lower()
             is_transformed = 'transform' in str(row.get('Transformed/Passed Through', '')).lower() or str(row.get('Transformation Logic', '')).strip() != ''
             is_filtered = 'filter' in str(row.get('Filtered', '')).lower() or str(row.get('Filtration Logic', '')).strip() != ''
@@ -471,20 +487,19 @@ def api_graph(cde_name):
             if inst_entry not in app_meta[c_app]['instances']:
                 app_meta[c_app]['instances'].append(inst_entry)
 
-            # --- INSTANCE GRAPH: Includes Name, Code, Table, Column ---
+            # --- INSTANCE GRAPH ---
             c_id = f"{c_app}|{c_tab.upper()}|{c_col.upper()}"
             if c_id not in inst_nodes:
-                inst_nodes[c_id] = {"id": c_id, "label": f"🏢 App: {c_name}\n🔑 Code: {c_app}\n📁 Table: {c_tab}\n📌 Col: {c_col}", "shape": "box", "color": {"background": "#F3F4F6", "border": "#005DAA"}, "font": {"face": "monospace", "align": "left"}}
+                inst_nodes[c_id] = {"id": c_id, "label": f"🏢 Name: {c_name}\n🔑 Code: {c_app}\n📁 Table: {c_tab}\n📌 Col: {c_col}", "shape": "box", "color": {"background": "#F3F4F6", "border": "#005DAA"}, "font": {"face": "monospace", "align": "left"}}
 
             if s_app and s_app.lower() != 'nan':
                 s_id = f"{s_app}|{s_tab.upper()}|{s_col.upper()}"
                 if s_id not in inst_nodes:
-                    inst_nodes[s_id] = {"id": s_id, "label": f"🏢 App: {s_name}\n🔑 Code: {s_app}\n📁 Table: {s_tab}\n📌 Col: {s_col}", "shape": "box", "color": {"background": "#E2E8F0", "border": "#64748B"}, "font": {"face": "monospace", "align": "left"}}
+                    inst_nodes[s_id] = {"id": s_id, "label": f"🏢 Name: {s_name}\n🔑 Code: {s_app}\n📁 Table: {s_tab}\n📌 Col: {s_col}", "shape": "box", "color": {"background": "#E2E8F0", "border": "#64748B"}, "font": {"face": "monospace", "align": "left"}}
                 
                 e_id = f"{s_id}->{c_id}"
                 inst_edges[e_id] = {"from": s_id, "to": c_id, "arrows": "to", "color": {"color": "#005DAA"}}
 
-                # --- APP GRAPH ---
                 if s_app not in app_meta:
                     app_meta[s_app] = {'code': s_app, 'name': s_name, 'manual': False, 'transformed': False, 'filtered': False, 'instances': []}
                 
@@ -492,21 +507,16 @@ def api_graph(cde_name):
                 if e_app_id not in app_edges:
                     app_edges[e_app_id] = {"from": s_app, "to": c_app, "arrows": "to", "color": {"color": "#10B981"}, "width": 2}
 
-        # Color the targets for Instance Graph
         src_inst_ids = {e['from'] for e in inst_edges.values()}
         for n_id, n in inst_nodes.items():
             if n_id not in src_inst_ids:
-                n['color'] = {"background": "#E0F2FE", "border": "#0284C7"}
-                n['borderWidth'] = 3
+                n['color'], n['borderWidth'] = {"background": "#E0F2FE", "border": "#0284C7"}, 3
 
         src_app_ids = {e['from'] for e in app_edges.values()}
         for app_key, meta in app_meta.items():
             app_nodes[app_key] = {"id": app_key, "meta": meta, "is_target": app_key not in src_app_ids}
 
-        return jsonify({
-            "instance_graph": {"nodes": list(inst_nodes.values()), "edges": list(inst_edges.values())},
-            "app_graph": {"nodes": list(app_nodes.values()), "edges": list(app_edges.values())}
-        })
+        return jsonify({"instance_graph": {"nodes": list(inst_nodes.values()), "edges": list(inst_edges.values())}, "app_graph": {"nodes": list(app_nodes.values()), "edges": list(app_edges.values())}})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

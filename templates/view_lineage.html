@@ -1,23 +1,22 @@
 {% extends 'base.html' %}
 
 {% block content %}
-<!-- Constrained Header (Matches Dashboard Width) -->
-<div class="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 mb-4 relative z-10">
-    <div class="bg-white shadow rounded-lg p-4 border border-gray-200 flex justify-between items-center">
-        <div>
-            <h1 class="text-xl font-bold text-gray-800">Lineage Flow: <span class="text-rbcBlue">{{ cde_name }}</span></h1>
-            <p class="text-sm text-gray-500 mt-1">Scroll to zoom, drag nodes freely to adjust, click and hold graph to pan.</p>
+<!-- EXACT Header Match from Dashboard -->
+<div class="mb-6 flex justify-between items-end relative z-10">
+    <div>
+        <div class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Data Lineage Manager &gt; New Project Dashboard</div>
+        <h1 class="text-2xl font-bold text-gray-900">Lineage Flow: <span class="text-rbcBlue">{{ cde_name }}</span></h1>
+        <p class="text-gray-600 mt-1">Scroll to zoom, drag nodes freely to adjust, click and hold graph to pan.</p>
+    </div>
+    
+    <div class="flex items-center gap-6">
+        <div class="bg-gray-100 p-1 rounded-lg border border-gray-300 flex shadow-sm">
+            <button id="btn-instance" onclick="switchView('instance')" class="px-4 py-1.5 text-sm font-bold rounded-md bg-white shadow text-rbcBlue transition-all">Instance Level</button>
+            <button id="btn-app" onclick="switchView('app')" class="px-4 py-1.5 text-sm font-bold rounded-md text-gray-500 hover:text-gray-800 transition-all">App Level</button>
         </div>
-        
-        <div class="flex items-center gap-6">
-            <div class="bg-gray-100 p-1 rounded-lg border border-gray-300 flex">
-                <button id="btn-instance" onclick="switchView('instance')" class="px-4 py-1.5 text-sm font-bold rounded-md bg-white shadow text-rbcBlue transition-all">Instance Level</button>
-                <button id="btn-app" onclick="switchView('app')" class="px-4 py-1.5 text-sm font-bold rounded-md text-gray-500 hover:text-gray-800 transition-all">App Level</button>
-            </div>
-            <a href="/dashboard" class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 px-4 rounded text-sm transition">
-                &larr; Back to Dashboard
-            </a>
-        </div>
+        <a href="/dashboard" class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 px-4 rounded shadow-sm text-sm transition">
+            &larr; Back to Dashboard
+        </a>
     </div>
 </div>
 
@@ -97,7 +96,6 @@
         const container = document.getElementById('networkGraph');
         if (network) network.destroy(); 
 
-        // MAGIC TRICK: Start with a strict Left-to-Right layout so the Report is always on the right
         const options = {
             layout: {
                 hierarchical: {
@@ -108,7 +106,7 @@
                     nodeSpacing: 150
                 }
             },
-            physics: { enabled: false }, // Turn off physics to stop jiggling
+            physics: { enabled: false }, 
             interaction: { dragNodes: true, dragView: true, zoomView: true, hover: true },
             nodes: { margin: 10, borderWidth: 2, shadow: true },
             edges: { smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.4 }, width: 2, arrows: 'to' }
@@ -116,7 +114,6 @@
 
         network = new vis.Network(container, data, options);
 
-        // SECOND MAGIC TRICK: Once drawn, freeze the coordinates and unlock the layout for free dragging!
         network.once("afterDrawing", function() {
             if (network.options.layout.hierarchical.enabled) {
                 const positions = network.getPositions();
@@ -124,9 +121,8 @@
                 for (let nodeId in positions) {
                     updates.push({ id: nodeId, x: positions[nodeId].x, y: positions[nodeId].y });
                 }
-                data.nodes.update(updates); // Save the perfect Left-to-Right positions permanently
+                data.nodes.update(updates); 
                 
-                // Unlock the grid so the user can drag nodes anywhere, and they stick perfectly
                 network.setOptions({
                     layout: { hierarchical: { enabled: false } },
                     physics: { enabled: false }
@@ -135,7 +131,6 @@
             }
         });
 
-        // Click Event for Side Panel
         network.on("click", function(params) {
             if (currentMode === 'app' && params.nodes.length > 0) {
                 const nodeId = params.nodes[0];
@@ -168,7 +163,6 @@
         }
     }
 
-    // --- Dynamic SVG Generator (App Name on Top, Code Below) ---
     function createAppSVG(meta, isTarget) {
         const w = 260, h = 95;
         const bg = isTarget ? '#E0F2FE' : '#FFFFFF';
@@ -206,7 +200,6 @@
         return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
     }
 
-    // --- Sidebar Logic ---
     function openPanel(meta) {
         document.getElementById('panelTitle').innerText = `🏢 ${meta.code}`;
         document.getElementById('panelSubtitle').innerText = meta.name;
