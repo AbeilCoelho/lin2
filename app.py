@@ -14,7 +14,7 @@ from datetime import datetime
 pd.options.mode.chained_assignment = None
 
 app = Flask(__name__)
-app.secret_key = 'rbc_lineage_super_secret_key'
+app.secret_key = '123_lineage_super_secret_key'
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['OUTPUT_FOLDER'] = 'outputs'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
@@ -53,6 +53,7 @@ def delete_state_for_key(key):
 
 def flexible_normalize(val):
     val = str(val).strip().upper()
+    if val == 'NAN': return ''
     val = re.sub(r'\d{8}', '', val)
     val = re.sub(r'\d{4}-\d{2}-\d{2}', '', val)
     return re.sub(r'[^A-Z0-9]', '', val)
@@ -76,11 +77,11 @@ def dashboard():
     if not os.path.exists(cde_path): return redirect(url_for('index'))
     
     with file_lock:
-        xls = pd.ExcelFile(cde_path)
-        df = pd.read_excel(xls, 'Sheet1')
-        df_done = pd.read_excel(xls, 'Done') if 'Done' in xls.sheet_names else pd.DataFrame()
+        xls = pd.ExcelFile(cde_path, engine='openpyxl')
+        df = pd.read_excel(xls, 'Sheet1').fillna("")
+        df_done = pd.read_excel(xls, 'Done').fillna("") if 'Done' in xls.sheet_names else pd.DataFrame()
         
-    done_keys = {f"{str(r.get('CDE name','')).strip()}|{str(r.get('Current app code','')).strip()}|{str(r.get('Current table/file name','')).strip()}|{str(r.get('Current column/field name','')).strip()}" for _, r in df_done.iterrows()}
+    done_keys = {f"{str(row.get('CDE name','')).strip()}|{str(row.get('Current app code','')).strip()}|{str(row.get('Current table/file name','')).strip()}|{str(row.get('Current column/field name','')).strip()}" for _, row in df_done.iterrows()}
 
     if 'Target App Codes' not in df.columns: df['Target App Codes'] = ""
     state_db = load_state()
@@ -91,7 +92,11 @@ def dashboard():
 
     for cde_name, group in grouped:
         target_apps = set()
-        for apps in group['Target App Codes'].dropna(): target_apps.update([app.strip().upper() for app in str(apps).split(',') if app.strip()])
+        for apps in group['Target App Codes']:
+            target_str = str(apps).strip()
+            if target_str.lower() not in ['nan', '']:
+                target_apps.update([app.strip().upper() for app in target_str.split(',') if app.strip()])
+                
         instances = []
         cde_completed = True
         
@@ -125,7 +130,7 @@ def api_retrace():
     cde_path = os.path.join(app.config['UPLOAD_FOLDER'], 'reporting_layers.xlsx')
     
     with file_lock:
-        df_done = pd.read_excel(cde_path, sheet_name='Done')
+        df_done = pd.read_excel(cde_path, sheet_name='Done', engine='openpyxl')
         df_done = df_done[~((df_done['CDE name'] == cde_name) & (df_done['Current app code'] == app_code) & (df_done['Current table/file name'] == table) & (df_done['Current column/field name'] == col))]
         with pd.ExcelWriter(cde_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
             df_done.to_excel(writer, sheet_name='Done', index=False)
@@ -158,10 +163,9 @@ def search_dataframe(df, app_code, table, col):
     app_code, table, col = str(app_code).strip().upper(), str(table).strip().upper(), str(col).strip().upper()
     if not app_code or app_code == 'NAN' or not table or table == 'NAN' or not col or col == 'NAN': return pd.DataFrame(), "No Match"
 
-    # FIXED: Bulletproof Pandas string conversion to avoid 'nan' string poisoning
     for c in ['Current app code', 'Current table/file name', 'Current column/field name']:
         if c not in df.columns: df[c] = ""
-        df[c] = df[c].fillna("").astype(str).str.strip().str.upper()
+        df[c] = df[c].astype(str).str.strip().str.upper().replace('NAN', '')
 
     df['clean_app'] = df['Current app code']
     df['clean_table'] = df['Current table/file name']
@@ -199,7 +203,8 @@ def execute_search_api_logic(cde_name, app_code, table, col, target_apps):
         if not os.path.exists(file_path): return
         
         with file_lock:
-            df = pd.read_excel(file_path)
+            # FIXED: Global fillna completely neutralizes NaN poisoning
+            df = pd.read_excel(file_path, engine='openpyxl').fillna("")
             
         matches, match_type = search_dataframe(df, app_code, table, col)
         if matches.empty: return
@@ -223,7 +228,7 @@ def execute_search_api_logic(cde_name, app_code, table, col, target_apps):
                     raw_rows.append({
                         "next_app": src_app, "next_table": str(row.get('Source table/file name', '')).strip(), "next_col": str(row.get('Source column/field name', '')).strip(),
                         "searched_table": table, "found_table": str(rep_row.get('Current table/file name', '')).strip(), "searched_col": col, "found_col": str(rep_row.get('Current column/field name', '')).strip(),
-                        "match_type": match_type, "raw_row_data": row.drop(labels=['clean_app', 'clean_table', 'clean_col', 'flex_table', 'flex_col', 'group_id'], errors='ignore').fillna('').to_dict()
+                        "match_type": match_type, "raw_row_data": row.drop(labels=['clean_app', 'clean_table', 'clean_col', 'flex_table', 'flex_col', 'group_id'], errors='ignore').to_dict()
                     })
 
             if raw_rows:
@@ -248,7 +253,7 @@ def write_lineage_to_files(cde_name, stack, is_dead_end):
     with file_lock:
         cde_path = os.path.join(app.config['UPLOAD_FOLDER'], 'reporting_layers.xlsx')
         with pd.ExcelWriter(cde_path, engine='openpyxl', mode='a', if_sheet_exists='overlay') as writer:
-            df_done = pd.read_excel(cde_path, sheet_name='Done') if 'Done' in pd.ExcelFile(cde_path).sheet_names else pd.DataFrame()
+            df_done = pd.read_excel(cde_path, sheet_name='Done', engine='openpyxl').fillna("") if 'Done' in pd.ExcelFile(cde_path, engine='openpyxl').sheet_names else pd.DataFrame()
             new_done = pd.DataFrame([{"Report name": "Lineage Engine", "CDE name": cde_name, "Current app code": stack[0]['app'], "Current table/file name": stack[0]['original_table'], "Current column/field name": stack[0]['original_col']}])
             df_done = pd.concat([df_done, new_done], ignore_index=True)
             df_done.to_excel(writer, sheet_name='Done', index=False)
@@ -272,24 +277,33 @@ def write_lineage_to_files(cde_name, stack, is_dead_end):
             seen_lineages.add(lineage_key)
 
             label = f"↓ {curr['app']}" if i == 0 else f"↑ {dest}   ↓ {curr['app']}"
-            output_rows.append({"Label": label})
             
             data_row = curr.get('raw_data', {}).copy()
-            current_table_output = curr.get('reconciled_table', curr['original_table'])
-            current_col_output = curr.get('reconciled_col', curr['original_col'])
+            
+            # FIXED: Explicitly map App Names to guarantee they appear on the graph!
+            c_name = str(data_row.get('Current app name', '')).strip()
+            s_name = str(next_node.get('raw_data', {}).get('Source app name', '')).strip() if i < len(stack) - 1 else ""
 
-            if s_app and next_node.get('searched_table') and next_node.get('found_table'):
-                nst, nsc, nft, nfc = next_node.get('searched_table', ''), next_node.get('searched_col', next_node['original_col']), next_node.get('found_table', ''), next_node.get('found_col', next_node['original_col'])
-                s_table = nft if nst == nft else f"{nst}/{nft}"
-                s_col = nfc if nsc == nfc else f"{nsc}/{nfc}"
-
-            data_row.update({"CDE name": cde_name, "Destination to (App Code)": dest, "Current app code": curr['app'], "Current table/file name": current_table_output, "Current column/field name": current_col_output, "Source app code": s_app, "Source table/file name": s_table, "Source column/field name": s_col, "QA Notes": curr.get('notes', '')})
+            data_row.update({
+                "Label": label,
+                "CDE name": cde_name, 
+                "Destination to (App Code)": dest, 
+                "Current app code": curr['app'], 
+                "Current app name": c_name if c_name.lower() != 'nan' else "",
+                "Current table/file name": curr.get('reconciled_table', curr['original_table']), 
+                "Current column/field name": curr.get('reconciled_col', curr['original_col']), 
+                "Source app code": s_app, 
+                "Source app name": s_name if s_name.lower() != 'nan' else "",
+                "Source table/file name": s_table, 
+                "Source column/field name": s_col, 
+                "QA Notes": curr.get('notes', '')
+            })
             output_rows.append(data_row)
 
         output_file = os.path.join(app.config['OUTPUT_FOLDER'], get_safe_filename(cde_name))
         df_out = pd.DataFrame(output_rows)
         if os.path.exists(output_file):
-            existing_df = pd.read_excel(output_file)
+            existing_df = pd.read_excel(output_file, engine='openpyxl').fillna("")
             df_combined = pd.concat([existing_df, df_out], ignore_index=True).drop_duplicates(subset=['Current app code', 'Current table/file name', 'Current column/field name', 'Source app code'], keep='first')
             df_out = df_combined
 
@@ -308,25 +322,26 @@ def save_lineage():
         session.modified = True
     return jsonify({"status": "success", "redirect": url_for('dashboard')})
 
-# --- UNIFIED BACKGROUND JOB ENGINE ---
 def process_instance_background(cde_name, target_key, initial_raw_data=None):
     try:
         cde_path = os.path.join(app.config['UPLOAD_FOLDER'], 'reporting_layers.xlsx')
         
         with file_lock:
-            xls = pd.ExcelFile(cde_path)
-            df = pd.read_excel(xls, 'Sheet1')
+            xls = pd.ExcelFile(cde_path, engine='openpyxl')
+            df = pd.read_excel(xls, 'Sheet1').fillna("")
         
         target_apps = []
         for _, row in df[df['CDE name'] == cde_name].iterrows():
-            target_apps.extend([t.strip().upper() for t in str(row.get("Target App Codes", "")).split(',') if t.strip()])
+            target_str = str(row.get("Target App Codes", ""))
+            if target_str.lower() != 'nan':
+                target_apps.extend([t.strip().upper() for t in target_str.split(',') if t.strip()])
         
-        state = load_state()
-        stack = state.get(target_key, {}).get('stack', [])
-        
+        with file_lock:
+            state = load_state()
+            stack = state.get(target_key, {}).get('stack', [])
+            
         if not stack:
             _, app_code, table, col = target_key.split('|')
-            # FIXED: Passes the actual App Name and metadata to the very first reporting node!
             stack = [{"app": app_code, "original_table": table, "original_col": col, "reconciled_table": table, "reconciled_col": col, "raw_data": initial_raw_data or {}}]
             
         update_state_for_key(target_key, {"status": "PROCESSING", "stack": stack, "timestamp": str(datetime.now())})
@@ -389,9 +404,9 @@ def start_auto_resolve():
     cde_path = os.path.join(app.config['UPLOAD_FOLDER'], 'reporting_layers.xlsx')
     
     with file_lock:
-        xls = pd.ExcelFile(cde_path)
-        df = pd.read_excel(xls, 'Sheet1')
-        df_done = pd.read_excel(xls, 'Done') if 'Done' in pd.ExcelFile(cde_path).sheet_names else pd.DataFrame()
+        xls = pd.ExcelFile(cde_path, engine='openpyxl')
+        df = pd.read_excel(xls, 'Sheet1').fillna("")
+        df_done = pd.read_excel(xls, 'Done').fillna("") if 'Done' in xls.sheet_names else pd.DataFrame()
         
     done_keys = {f"{str(row.get('CDE name','')).strip()}|{str(row.get('Current app code','')).strip()}|{str(row.get('Current table/file name','')).strip()}|{str(row.get('Current column/field name','')).strip()}" for _, row in df_done.iterrows()}
     
@@ -405,8 +420,7 @@ def start_auto_resolve():
         key = f"{c_name}|{c_app}|{c_tab}|{c_col}"
         
         if key not in done_keys and state.get(key, {}).get("status") != "NEEDS_REVIEW":
-            # Extract raw data to pass App Name properly!
-            raw_data = row.fillna("").to_dict()
+            raw_data = row.to_dict() 
             executor.submit(process_instance_background, c_name, key, raw_data)
             
     return jsonify({"status": "Bulk job started"})
@@ -416,11 +430,10 @@ def start_single_auto_resolve():
     data = request.json
     target_key = f"{data['cde_name']}|{data['app']}|{data['table']}|{data['column']}"
     
-    # We do a quick fetch of the row to give it the App Name
     with file_lock:
-        df = pd.read_excel(os.path.join(app.config['UPLOAD_FOLDER'], 'reporting_layers.xlsx'), 'Sheet1')
+        df = pd.read_excel(os.path.join(app.config['UPLOAD_FOLDER'], 'reporting_layers.xlsx'), 'Sheet1', engine='openpyxl').fillna("")
         row = df[(df['CDE name'] == data['cde_name']) & (df['Current app code'] == data['app'])].iloc[0]
-        raw_data = row.fillna("").to_dict()
+        raw_data = row.to_dict()
         
     executor.submit(process_instance_background, data['cde_name'], target_key, raw_data)
     return jsonify({"status": "Single instance job started"})
@@ -447,7 +460,8 @@ def api_graph(cde_name):
         output_file = os.path.join(app.config['OUTPUT_FOLDER'], get_safe_filename(cde_name))
         if not os.path.exists(output_file): return jsonify({"error": "File not found"})
 
-        df = pd.read_excel(output_file).fillna("")
+        with file_lock:
+            df = pd.read_excel(output_file, engine='openpyxl').fillna("")
         
         inst_nodes, inst_edges = {}, {}
         app_nodes, app_edges = {}, {}
@@ -487,7 +501,6 @@ def api_graph(cde_name):
             if inst_entry not in app_meta[c_app]['instances']:
                 app_meta[c_app]['instances'].append(inst_entry)
 
-            # --- INSTANCE GRAPH ---
             c_id = f"{c_app}|{c_tab.upper()}|{c_col.upper()}"
             if c_id not in inst_nodes:
                 inst_nodes[c_id] = {"id": c_id, "label": f"🏢 Name: {c_name}\n🔑 Code: {c_app}\n📁 Table: {c_tab}\n📌 Col: {c_col}", "shape": "box", "color": {"background": "#F3F4F6", "border": "#005DAA"}, "font": {"face": "monospace", "align": "left"}}
