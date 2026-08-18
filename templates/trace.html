@@ -1,0 +1,406 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div x-data="tracingApp()" x-init="initTrace()" class="max-w-7xl mx-auto h-[85vh] flex flex-col">
+
+    <!-- Path & Branches Header -->
+    <div class="bg-white shadow rounded-lg p-4 mb-4 border border-gray-200">
+        <div class="flex justify-between items-center text-sm mb-3 border-b pb-2">
+            <div>
+                <span class="font-bold text-gray-700">Tracing: <span class="text-rbcBlue">{{ cde_name }}</span></span>
+                <span x-show="resumeMode" class="ml-2 bg-yellow-100 text-yellow-800 text-[10px] font-bold px-2 py-0.5 rounded shadow-sm border border-yellow-200">AUTO-RESOLVE MANUAL REVIEW MODE</span>
+            </div>
+            
+            <button x-show="stack.length > 1 || undoHistory.length > 1" @click="undo()" :disabled="loading" :class="loading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-red-200 hover:text-red-700'" class="bg-gray-200 text-gray-700 font-bold py-1 px-3 rounded text-xs transition duration-200">
+                ↶ Undo Step (<span x-text="undoHistory.length - 1"></span> hops)
+            </button>
+        </div>
+        
+        <!-- REQ 2: Better Branch Visualization -->
+        <div class="space-y-1.5 max-h-32 overflow-y-auto mt-2">
+            <template x-for="(path, pIdx) in completedPaths" :key="'comp'+pIdx">
+                <div class="flex items-center bg-green-50 p-1 rounded opacity-75 text-[10px] border border-green-100">
+                    <span class="font-bold text-green-700 mr-2 w-16 text-right">✓ Done:</span>
+                    <span class="font-mono bg-white border border-gray-200 px-1 rounded truncate max-w-xs" x-text="path.stack[path.stack.length-1].app"></span>
+                    <span class="mx-1 text-gray-400">→ ... →</span>
+                    <span class="font-mono bg-white border border-gray-200 px-1 rounded truncate max-w-xs" x-text="path.stack[0].app"></span>
+                </div>
+            </template>
+
+            <div class="flex items-center bg-blue-50 p-2 rounded border border-blue-200 shadow-sm">
+                <span class="text-xs font-bold text-rbcBlue mr-3 w-16 text-right">► Active:</span>
+                <div class="flex flex-wrap items-center">
+                    <template x-for="(node, index) in [...stack].reverse()" :key="index">
+                        <div class="flex items-center">
+                            <span x-show="index > 0" class="mx-1 text-blue-300 font-bold">→</span>
+                            <span class="px-2 py-0.5 text-[11px] font-mono font-bold rounded shadow-sm border" :class="index === 0 ? 'bg-yellow-100 border-yellow-400 text-yellow-900 ring-2 ring-yellow-200' : (index === stack.length-1 ? 'bg-rbcBlue text-white border-rbcBlue' : 'bg-white text-gray-800 border-gray-300')" x-text="node.app"></span>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+            <template x-for="(branch, bIdx) in pendingBranches" :key="'pend'+bIdx">
+                <div class="flex items-center bg-yellow-50 p-1.5 rounded opacity-80 border border-yellow-200">
+                    <span class="text-[10px] font-bold text-yellow-700 mr-2 w-16 text-right">⏳ Queued:</span>
+                    <span class="font-mono bg-white border border-yellow-300 px-1 rounded truncate text-[10px]" x-text="branch[branch.length-1].app"></span>
+                    <span class="mx-1 text-gray-400 text-[10px]">diverges from</span>
+                    <span class="font-mono bg-white border border-yellow-300 px-1 rounded text-[10px]" x-text="branch[branch.length-2].app"></span>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <div class="flex flex-1 gap-6 overflow-hidden">
+        <!-- Left Panel: Investigating Node -->
+        <div class="w-1/3 bg-white shadow rounded-lg p-6 flex flex-col border border-gray-200 relative">
+            <div x-show="loading" class="absolute inset-0 bg-white bg-opacity-50 z-10"></div>
+            <h2 class="text-lg font-bold text-rbcBlue mb-4 border-b pb-2">Investigating Node</h2>
+            <div class="mb-4"><label class="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Current App</label><div class="text-xl font-mono font-bold text-gray-900" x-text="currentNode.app"></div></div>
+            <div class="mb-4"><label class="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Current Table.File</label><div class="text-sm font-semibold text-gray-800 break-all" x-text="currentNode.original_table"></div></div>
+            <div class="mb-4"><label class="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Current Column.Field</label><div class="text-sm font-semibold text-gray-800 break-all" x-text="currentNode.original_col"></div></div>
+            <div class="mt-auto">
+                <label class="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Mapping Notes</label>
+                <textarea x-model="currentNode.notes" :disabled="loading" rows="2" class="w-full mt-1 border border-gray-300 rounded p-2 text-sm bg-gray-50"></textarea>
+                <button @click="finishLineage(true)" :disabled="loading" class="mt-3 w-full bg-red-50 text-red-700 border border-red-200 text-sm font-bold py-2 px-4 rounded hover:bg-red-100 transition">Mark Dead End (End Branch)</button>
+            </div>
+        </div>
+
+        <!-- Right Panel: Candidates & Dead End -->
+        <div class="w-2/3 bg-white shadow rounded-lg p-6 overflow-y-auto border border-gray-200 bg-gray-50 relative">
+            <div x-show="loading" class="absolute inset-0 bg-white bg-opacity-70 z-10 flex flex-col justify-center items-center">
+                <span class="text-sm font-bold text-rbcBlue animate-pulse">Processing...</span>
+            </div>
+
+            <div x-show="!loading && candidates.length === 0" class="bg-white border-2 border-red-200 rounded-lg p-6 shadow-sm">
+                <div class="flex items-center text-red-600 mb-4 border-b border-red-100 pb-3">
+                    <svg class="w-6 h-6 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                    <h3 class="text-lg font-bold">End of Discovered Lineage</h3>
+                </div>
+
+                <!-- REQ 4: Exact Real Data Schema Layout -->
+                <div class="bg-gray-50 rounded border border-gray-200 mb-5">
+                    <div class="bg-gray-200 px-3 py-1.5 rounded-t"><h4 class="text-xs font-bold text-gray-700 uppercase">Current Instance Detailed Metadata</h4></div>
+                    <div class="p-3 grid grid-cols-2 gap-x-4 gap-y-2 text-[11px]">
+                        <div><span class="font-bold text-gray-500">App Name:</span> <span class="text-gray-800" x-text="getMeta('Current app name')"></span></div>
+                        <div><span class="font-bold text-gray-500">Ownership:</span> <span class="text-gray-800" x-text="getMeta('Current App Ownership (RBC Owned or Vendor Managed)')"></span></div>
+                        <div><span class="font-bold text-gray-500">Creation Method:</span> <span class="text-blue-700 font-bold" x-text="getMeta('Created/Sourced') + ' / ' + getMeta('Manually entered/Derived')"></span></div>
+                        <div><span class="font-bold text-gray-500">Current Schema:</span> <span class="text-gray-800" x-text="getMeta('Schema')"></span></div>
+                        <div class="col-span-2 border-t pt-1 mt-1"><span class="font-bold text-gray-500">Screen UI (Manual Entry):</span> <span class="text-gray-800 font-mono" x-text="getMeta('Screen Name (UI)') + ' > ' + getMeta('Screen Field Name (UI)')"></span></div>
+                        <div class="col-span-2"><span class="font-bold text-gray-500">File Path:</span> <span class="text-gray-800 font-mono text-[9px] break-all" x-text="getMeta('file')"></span></div>
+                        <div class="col-span-2 border-t pt-1 mt-1"><span class="font-bold text-gray-500">Transformation:</span> <span class="text-gray-800" x-text="getMeta('Transformation Logic', 'Transformation Description')"></span></div>
+                        <div class="col-span-2"><span class="font-bold text-gray-500">Filtration:</span> <span class="text-gray-800" x-text="getMeta('Filtration Logic', 'Filtration Description')"></span></div>
+                        <div class="col-span-2"><span class="font-bold text-gray-500">Field Type / Desc:</span> <span class="text-gray-800" x-text="getMeta('Data Element Field Type') + ' - ' + getMeta('Field Description')"></span></div>
+                    </div>
+                </div>
+
+                <div x-show="!showManualInput" class="flex flex-col space-y-3">
+                    <button @click="finishLineage(true)" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded shadow transition">✓ Confirm End of Lineage</button>
+                    <button @click="showManualInput = true" class="w-full bg-white hover:bg-gray-50 text-rbcBlue border-2 border-rbcBlue font-bold py-2 px-4 rounded shadow transition">➕ Manually Continue Investigation</button>
+                </div>
+
+                                <!-- Manual Input Form -->
+                <div x-show="showManualInput" x-transition class="bg-blue-50 p-4 rounded border border-blue-200">
+                    <h4 class="text-xs font-bold text-rbcBlue uppercase tracking-wider mb-3">Define Next Source</h4>
+                    <div class="grid grid-cols-1 gap-3 text-sm mb-4">
+                        <div><label class="block font-bold text-gray-700 mb-1">Source App Code *</label><input type="text" x-model="manualApp" class="w-full border rounded p-2 uppercase focus:ring-rbcBlue"></div>
+                        <div><label class="block font-bold text-gray-700 mb-1">Source Table / File *</label><input type="text" x-model="manualTable" class="w-full border rounded p-2 focus:ring-rbcBlue"></div>
+                        <div><label class="block font-bold text-gray-700 mb-1">Source Column / Field *</label><input type="text" x-model="manualCol" class="w-full border rounded p-2 focus:ring-rbcBlue"></div>
+                    </div>
+
+                    <!-- Manual Standardization Options -->
+                    <div x-show="manualTable || manualCol" class="bg-yellow-50 border border-yellow-200 rounded p-3 mb-4">
+                        <label class="block text-[10px] font-bold text-yellow-800 uppercase mb-2">Standardization Output Option:</label>
+                        <div class="space-y-2">
+                            <label class="flex items-center p-2 border border-yellow-200 rounded cursor-pointer bg-white hover:bg-yellow-100">
+                                <input type="radio" value="current" x-model="manualStitchChoice" class="w-4 h-4 text-rbcBlue">
+                                <span class="ml-3 text-xs"><b>Keep Current:</b> <span x-text="currentNode.original_table + '.' + currentNode.original_col"></span></span>
+                            </label>
+                            <label class="flex items-center p-2 border border-yellow-200 rounded cursor-pointer bg-white hover:bg-yellow-100">
+                                <input type="radio" value="manual" x-model="manualStitchChoice" class="w-4 h-4 text-rbcBlue">
+                                <span class="ml-3 text-xs"><b>Keep Manual:</b> <span x-text="manualTable + '.' + manualCol"></span></span>
+                            </label>
+                            <label class="flex items-center p-2 border border-yellow-200 rounded cursor-pointer bg-yellow-100 shadow-sm">
+                                <input type="radio" value="concat" x-model="manualStitchChoice" class="w-4 h-4 text-rbcBlue">
+                                <span class="ml-3 text-xs"><b>Concatenate:</b> <span x-text="(currentNode.original_table === manualTable ? manualTable : currentNode.original_table + '/' + manualTable) + '.' + (currentNode.original_col === manualCol ? manualCol : currentNode.original_col + '/' + manualCol)"></span></span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="flex gap-2">
+                        <button @click="showManualInput = false" class="w-1/3 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 px-4 rounded transition">Cancel</button>
+                        <button @click="submitManualSource()" :disabled="!manualApp || !manualTable || !manualCol" class="w-2/3 bg-rbcYellow hover:bg-yellow-500 text-gray-900 font-bold py-2 px-4 rounded transition disabled:opacity-50">Trace Manual Entry →</button>
+                    </div>
+                </div>
+
+            </div>
+
+            <div x-show="candidates.length > 0">
+                <h2 class="text-lg font-bold text-gray-800 mb-4 border-b pb-2">Select Source (Available Options)</h2>
+                <div class="space-y-4">
+                    <template x-for="(cand, idx) in candidates" :key="idx">
+                        <div class="border border-gray-300 rounded-lg p-5 bg-white shadow-sm hover:border-rbcBlue transition">
+                            <div class="flex justify-between items-center mb-3">
+                                <div class="flex gap-2">
+                                    <span class="px-2 py-0.5 text-[10px] font-bold uppercase rounded text-white" :class="cand.source === 'Global Lineage' ? 'bg-purple-500' : 'bg-rbcBlue'" x-text="cand.source"></span>
+                                    <span class="px-2 py-0.5 text-[10px] font-bold uppercase rounded" :class="cand.match_type.includes('Exact') ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'" x-text="cand.match_type"></span>
+                                </div>
+                            </div>
+                            
+                            <div class="mb-3 border-l-4 border-rbcBlue pl-3 py-2 bg-blue-50 text-sm">
+                                <p><span class="font-bold text-[10px] text-gray-600 uppercase">Found Table:</span> <span class="font-mono font-bold text-rbcBlue" x-text="cand.found_table"></span></p>
+                                <p><span class="font-bold text-[10px] text-gray-600 uppercase">Found Column:</span> <span class="font-mono text-gray-800" x-text="cand.found_col"></span></p>
+                            </div>
+                            <!-- PERFECTED FUZZY STITCHING -->
+                            <template x-if="cand.raw_rows && cand.raw_rows[0] && (cand.raw_rows[0].match_type.includes('Fuzzy') || cand.raw_rows[0].match_type.includes('Flexible'))">
+                                <div class="mb-3 bg-yellow-50 border border-yellow-200 rounded p-3">
+                                    <label class="block text-[10px] font-bold text-yellow-800 uppercase mb-2">⚠️ Fuzzy Match Found - Standardization Output:</label>
+                                    <div class="space-y-2">
+                                        <label class="flex items-center p-2 border border-yellow-200 rounded cursor-pointer bg-white hover:bg-yellow-100">
+                                            <input type="radio" value="searched" x-model="cand.stitchChoice" class="w-4 h-4">
+                                            <span class="ml-3 text-xs"><span class="font-bold text-gray-700">Keep Searched:</span> <span class="font-mono text-gray-900" x-text="cand.raw_rows[0].searched_table + '.' + cand.raw_rows[0].searched_col"></span></span>
+                                        </label>
+                                        <label class="flex items-center p-2 border border-yellow-200 rounded cursor-pointer bg-white hover:bg-yellow-100">
+                                            <input type="radio" value="found" x-model="cand.stitchChoice" class="w-4 h-4">
+                                            <span class="ml-3 text-xs"><span class="font-bold text-gray-700">Keep Found:</span> <span class="font-mono text-gray-900" x-text="cand.found_table + '.' + cand.found_col"></span></span>
+                                        </label>
+                                        <label class="flex items-center p-2 border border-yellow-200 rounded cursor-pointer bg-yellow-100 shadow-sm">
+                                            <input type="radio" value="concat" x-model="cand.stitchChoice" class="w-4 h-4">
+                                            <span class="ml-3 text-xs"><span class="font-bold text-gray-700">Concatenate (Smart):</span> 
+                                            <span class="font-mono text-gray-900" x-text="(cand.raw_rows[0].searched_table === cand.found_table ? cand.found_table : cand.raw_rows[0].searched_table + '/' + cand.found_table) + '.' + (cand.raw_rows[0].searched_col === cand.found_col ? cand.found_col : cand.raw_rows[0].searched_col + '/' + cand.found_col)"></span>
+                                            </span>
+                                        </label>
+                                    </div>
+                                    <p class="text-[10px] text-yellow-700 mt-2 font-bold uppercase">This value will be applied to the Source and Current fields to perfectly stitch the lineage flow.</p>
+                                </div>
+                            </template>
+                            <div class="bg-gray-100 border border-gray-200 rounded p-3 flex justify-between items-center mt-3">
+                                <div>
+                                    <p class="text-[10px] text-gray-600 font-bold uppercase mb-1">Source Apps (<span x-text="cand.source_count"></span>):</p>
+                                    <div class="flex flex-wrap gap-1">
+                                        <template x-for="app in cand.distinct_sources" :key="app">
+                                            <span class="px-2 py-0.5 text-xs font-mono font-bold rounded" :class="isTargetApp(app) ? 'bg-green-500 text-white shadow' : 'bg-white border border-gray-300 text-gray-700'" x-text="app"></span>
+                                        </template>
+                                    </div>
+                                </div>
+                                
+                                <!-- REQ 1: Resume Auto-Resolve Button -->
+                                <template x-if="resumeMode">
+                                    <button @click="resumeAutoResolve(cand)" :disabled="loading" class="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded shadow transition text-sm flex items-center">
+                                        <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                                        Confirm & Resume Auto-Resolve
+                                    </button>
+                                </template>
+                                <template x-if="!resumeMode">
+                                    <button @click="selectCandidateGroup(cand)" :disabled="loading" class="bg-rbcBlue hover:bg-rbcBlueDark text-white font-bold py-2 px-4 rounded shadow transition text-sm">
+                                        Confirm & Trace →
+                                    </button>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+<script>
+    function tracingApp() {
+        return {
+            cde_name: "{{ cde_name }}",
+            targetApps: "{{ target_apps }}".split(',').map(s => s.trim().toUpperCase()).filter(s => s),
+            resumeMode: {{ 'true' if resume_auto == 'true' else 'false' }},
+            stack: [],
+            completedPaths: [],
+            pendingBranches: [],
+            currentNode: { app: "{{ app_code }}", original_table: "{{ table_name }}", original_col: "{{ column_name }}", reconciled_table: "{{ table_name }}", reconciled_col: "{{ column_name }}", notes: "", raw_data: {} },
+            candidates: [],
+            loading: false,
+            undoHistory: [],
+            showManualInput: false, manualApp: '', manualTable: '', manualCol: '', manualStitchChoice: 'concat',
+
+            snapshotState() { return JSON.stringify({ stack: this.stack, pendingBranches: this.pendingBranches, completedPaths: this.completedPaths, currentNode: this.currentNode }); },
+
+            initTrace() {
+                let resumeStackStr = '{{ resume_stack | safe }}';
+                let preloadedStack = JSON.parse(resumeStackStr || "[]");
+                
+                if (preloadedStack.length > 0) {
+                    this.stack = preloadedStack;
+                    this.currentNode = { ...this.stack[this.stack.length - 1] };
+                } else {
+                    this.stack.push({ ...this.currentNode });
+                }
+                this.undoHistory.push(this.snapshotState());
+                this.searchCandidates();
+            },
+
+            isTargetApp(appCode) { return this.targetApps.includes((appCode || "").toUpperCase()); },
+
+            getMeta(...keys) {
+                if (!this.currentNode.raw_data) return "N/A";
+                for (let key of keys) {
+                    if (this.currentNode.raw_data[key] && String(this.currentNode.raw_data[key]).trim() !== '') return this.currentNode.raw_data[key];
+                }
+                return "N/A";
+            },
+
+            async searchCandidates() {
+                this.loading = true;
+                this.showManualInput = false;
+                try {
+                    const res = await fetch('/api/search', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ cde_name: this.cde_name, app: this.currentNode.app, table: this.currentNode.original_table, column: this.currentNode.original_col, target_apps: this.targetApps })
+                    });
+                    const data = await res.json();
+                    this.candidates = data.candidates.map(c => ({...c, stitchChoice: 'concat'}));
+                } catch (e) { alert("Error: " + e.message); } finally { this.loading = false; }
+            },
+
+            // --> FIXED: ADDED THE MISSING getStitchedValues FUNCTION <--
+            getStitchedValues(cand) {
+                let st = (cand.raw_rows && cand.raw_rows[0] && cand.raw_rows[0].searched_table) ? cand.raw_rows[0].searched_table : this.currentNode.original_table;
+                let sc = (cand.raw_rows && cand.raw_rows[0] && cand.raw_rows[0].searched_col) ? cand.raw_rows[0].searched_col : this.currentNode.original_col;
+                let ft = cand.found_table;
+                let fc = cand.found_col;
+
+                if (cand.stitchChoice === 'searched') return { table: st, col: sc };
+                if (cand.stitchChoice === 'found') return { table: ft, col: fc };
+                
+                // Concat (Smart)
+                return {
+                    table: (st === ft) ? ft : `${st}/${ft}`,
+                    col: (sc === fc) ? fc : `${sc}/${fc}`
+                };
+            },
+
+            async resumeAutoResolve(cand) {
+                this.loading = true;
+                let stitched = this.getStitchedValues(cand);
+                
+                this.stack[this.stack.length - 1].reconciled_table = stitched.table;
+                this.stack[this.stack.length - 1].reconciled_col = stitched.col;
+                if (cand.raw_rows && cand.raw_rows.length > 0) this.stack[this.stack.length - 1].raw_data = cand.raw_rows[0].raw_row_data;
+                
+                let first_src = cand.raw_rows[0];
+                this.stack.push({ app: first_src.next_app, original_table: first_src.next_table, original_col: first_src.next_col, raw_data: first_src.raw_row_data, notes: "Auto-Resolve Resumed" });
+
+                try {
+                    await fetch('/api/auto_resolve/resume', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ cde_name: this.cde_name, stack: this.stack })
+                    });
+                    window.location.href = '/dashboard';
+                } catch(e) { alert(e); this.loading = false; }
+            },
+
+            selectCandidateGroup(cand) {
+                let stitched = this.getStitchedValues(cand);
+                
+                this.stack[this.stack.length - 1].reconciled_table = stitched.table;
+                this.stack[this.stack.length - 1].reconciled_col = stitched.col;
+                this.stack[this.stack.length - 1].report_name = cand.report_name;
+
+                if (cand.raw_rows && cand.raw_rows.length > 0) {
+                    this.stack[this.stack.length - 1].raw_data = cand.raw_rows[0].raw_row_data;
+                }
+
+                let raw_sources = cand.raw_rows;
+                if (raw_sources.length === 0) { this.finishLineage(true); return; }
+
+                if (raw_sources.length > 1) {
+                    for (let i = 1; i < raw_sources.length; i++) {
+                        let branchStack = JSON.parse(JSON.stringify(this.stack));
+                        branchStack.push({ app: raw_sources[i].next_app, original_table: raw_sources[i].next_table, original_col: raw_sources[i].next_col, raw_data: raw_sources[i].raw_row_data });
+                        this.pendingBranches.push(branchStack);
+                    }
+                }
+
+                let first_src = raw_sources[0];
+                let newNode = { app: first_src.next_app, original_table: first_src.next_table, original_col: first_src.next_col, raw_data: first_src.raw_row_data, notes: "" };
+
+                this.currentNode = { ...newNode };
+                this.stack.push(newNode);
+                this.undoHistory.push(this.snapshotState());
+                this.searchCandidates();
+            },
+
+            submitManualSource() {
+                let st = this.currentNode.original_table;
+                let sc = this.currentNode.original_col;
+                let ft = this.manualTable.trim();
+                let fc = this.manualCol.trim();
+
+                let recTable = ft, recCol = fc;
+                if (this.manualStitchChoice === 'current') { recTable = st; recCol = sc; }
+                else if (this.manualStitchChoice === 'concat') {
+                    recTable = (st === ft) ? ft : `${st}/${ft}`;
+                    recCol = (sc === fc) ? fc : `${sc}/${fc}`;
+                }
+
+                this.stack[this.stack.length - 1].reconciled_table = recTable;
+                this.stack[this.stack.length - 1].reconciled_col = recCol;
+
+                let manualAppUpper = this.manualApp.trim().toUpperCase();
+                let manualNode = {
+                    app: manualAppUpper,
+                    original_table: ft,
+                    original_col: fc,
+                    reconciled_table: recTable,
+                    reconciled_col: recCol,
+                    notes: "Manually Entered Link",
+                    raw_data: { "Created/Sourced": "MANUALLY ENTERED" }
+                };
+
+                this.currentNode = { ...manualNode };
+                this.stack.push(manualNode);
+                this.undoHistory.push(this.snapshotState());
+                this.searchCandidates();
+            },
+
+            async undo() {
+                if (this.undoHistory.length > 1) {
+                    this.undoHistory.pop();
+                    let prev = JSON.parse(this.undoHistory[this.undoHistory.length - 1]);
+                    this.stack = prev.stack; this.pendingBranches = prev.pendingBranches; this.completedPaths = prev.completedPaths; this.currentNode = prev.currentNode;
+                    this.searchCandidates();
+                }
+            },
+
+            resetTrace() {
+                if (confirm('🔄 Reset entire trace?')) {
+                    this.stack = [{ app: "{{ app_code }}", original_table: "{{ table_name }}", original_col: "{{ column_name }}", notes: "", reconciled_table: "{{ table_name }}", reconciled_col: "{{ column_name }}" }];
+                    this.pendingBranches = []; this.completedPaths = []; this.candidates = [];
+                    this.currentNode = { ...this.stack[0] };
+                    this.undoHistory = [this.snapshotState()];
+                    this.searchCandidates();
+                }
+            },
+
+            async finishLineage(isDeadEnd) {
+                this.completedPaths.push({ stack: [...this.stack], is_dead_end: isDeadEnd });
+
+                if (this.pendingBranches.length > 0) {
+                    this.stack = this.pendingBranches.shift();
+                    this.currentNode = { ...this.stack[this.stack.length - 1] };
+                    this.undoHistory.push(this.snapshotState());
+
+                    this.candidates = [];
+                    this.searchCandidates();
+                    return;
+                }
+
+                this.loading = true;
+                try {
+                    for (let path of this.completedPaths) {
+                        await fetch('/api/save_lineage', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cde_name: this.cde_name, stack: path.stack, is_dead_end: path.is_dead_end }) });
+                    }
+                    window.location.href = '/dashboard';
+                } catch (e) { alert("Error saving: " + e.message); this.loading = false; }
+            }
+        }
+    }
+</script>
+{% endblock %}
