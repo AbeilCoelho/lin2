@@ -400,7 +400,7 @@ def api_retrace():
 
 @app.route("/trace/<cde_name>/<app_code>/<table_name>/<column_name>")
 def trace(cde_name, app_code, table_name, column_name):
-    project = session['active_project']
+    project = session.get('active_project')
     target_apps = request.args.get("targets", "")
     resume_auto = request.args.get("resume_auto", "false")
     key = f"{cde_name}|{app_code}|{table_name}|{column_name}"
@@ -411,20 +411,16 @@ def trace(cde_name, app_code, table_name, column_name):
     state = load_state(project)
     resume_data = state.get(key, {})
     
-    # FIXED: Pull the entire workspace state out of the JSON file
+    # We pass the raw Python lists to the template!
     resume_stack = resume_data.get("stack", [])
     resume_pending = resume_data.get("pendingBranches", [])
     resume_completed = resume_data.get("completedPaths", [])
 
     return render_template(
-        "trace.html", 
-        cde_name=cde_name, app_code=app_code, table_name=table_name, column_name=column_name, 
+        "trace.html", cde_name=cde_name, app_code=app_code, table_name=table_name, column_name=column_name, 
         target_apps=target_apps, resume_auto=resume_auto,
-        resume_stack=json.dumps(resume_stack), 
-        resume_pending=json.dumps(resume_pending),
-        resume_completed=json.dumps(resume_completed)
+        resume_stack=resume_stack, resume_pending=resume_pending, resume_completed=resume_completed
     )
-
 
 # --- NEW: SAVE MIDWAY ---
 @app.route("/api/save_midway", methods=["POST"])
@@ -437,8 +433,8 @@ def save_midway():
     update_state_for_key(project, target_key, {
         "status": "NEEDS_REVIEW", 
         "stack": stack, 
-        "pendingBranches": data.get("pendingBranches", []),  # FIXED: Save pending branches
-        "completedPaths": data.get("completedPaths", []),    # FIXED: Save completed paths
+        "pendingBranches": data.get("pendingBranches", []),
+        "completedPaths": data.get("completedPaths", []),
         "reason": "Midway Save by User (Paused)", 
         "timestamp": str(datetime.now())
     })
@@ -828,7 +824,6 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
 
         update_state_for_key(project_name, target_key, {"status": "PROCESSING", "stack": stack, "pendingBranches": pending_branches, "completedPaths": completed_paths, "timestamp": str(datetime.now())})
 
-        # Load queue with the active stack, PLUS any pending branches from previous pauses
         stacks_to_process = [stack] + pending_branches
 
         while stacks_to_process:
@@ -839,22 +834,14 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
 
             if len(candidates) == 0:
                 reason = "End of Discovered Lineage (Dead End). Please confirm or Manually Link."
-                update_state_for_key(project_name, target_key, {
-                    "status": "NEEDS_REVIEW", "stack": current_stack, 
-                    "pendingBranches": stacks_to_process, "completedPaths": completed_paths, # FIXED: Preserve queue!
-                    "reason": reason, "timestamp": str(datetime.now())
-                })
+                update_state_for_key(project_name, target_key, {"status": "NEEDS_REVIEW", "stack": current_stack, "pendingBranches": stacks_to_process, "completedPaths": completed_paths, "reason": reason, "timestamp": str(datetime.now())})
                 return
 
             best_cand = candidates[0]
 
             if best_cand["match_type"] != "Exact Match" or len(candidates) > 1:
                 reason = f"{best_cand['match_type']} or Multiple Files detected. Human review required to confirm."
-                update_state_for_key(project_name, target_key, {
-                    "status": "NEEDS_REVIEW", "stack": current_stack, 
-                    "pendingBranches": stacks_to_process, "completedPaths": completed_paths, # FIXED: Preserve queue!
-                    "reason": reason, "timestamp": str(datetime.now())
-                })
+                update_state_for_key(project_name, target_key, {"status": "NEEDS_REVIEW", "stack": current_stack, "pendingBranches": stacks_to_process, "completedPaths": completed_paths, "reason": reason, "timestamp": str(datetime.now())})
                 return
 
             track_file_usage(project_name, best_cand.get("file_path"))
@@ -951,20 +938,18 @@ def resume_auto_resolve():
     project = session['active_project']
     data = request.json
     cde_name, stack = data["cde_name"], data["stack"]
-    pending = data.get("pendingBranches", [])
-    completed = data.get("completedPaths", [])
-    
     target_key = f"{cde_name}|{stack[0]['app']}|{stack[0]['original_table']}|{stack[0]['original_col']}"
 
     if len(stack) > 1 and "file" in stack[-1].get("raw_data", {}):
         track_file_usage(project, stack[-1]["raw_data"]["file"])
 
     update_state_for_key(project, target_key, {
-        "status": "PROCESSING", "stack": stack, 
-        "pendingBranches": pending, "completedPaths": completed,
+        "status": "PROCESSING", 
+        "stack": stack, 
+        "pendingBranches": data.get("pendingBranches", []),
+        "completedPaths": data.get("completedPaths", []),
         "timestamp": str(datetime.now())
     })
-    
     executor.submit(process_instance_background, project, cde_name, target_key)
     return jsonify({"status": "Resumed in background"})
 
