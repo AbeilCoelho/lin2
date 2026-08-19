@@ -21,10 +21,22 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
 
-executor = ThreadPoolExecutor(max_workers=4)
+executor = ThreadPoolExecutor(max_workers=8)
 file_lock = threading.RLock()
 STATE_FILE = os.path.join(app.config['UPLOAD_FOLDER'], 'auto_resolve_state.json')
 
+def make_json_serializable(obj):
+    if isinstance(obj, dict):
+        return {k: make_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [make_json_serializable(item) for item in obj]
+    elif hasattr(obj, 'isoformat'): 
+        return obj.isoformat()
+    elif isinstance(obj, (int, float, str, bool, type(None))):
+        return obj
+    else:
+        return str(obj)
+   
 def load_state():
     with file_lock:
         if os.path.exists(STATE_FILE):
@@ -36,7 +48,9 @@ def load_state():
 
 def save_state(state):
     with file_lock:
-        with open(STATE_FILE, 'w') as f: json.dump(state, f, indent=4)
+        state = make_json_serializable(state)
+        with open(STATE_FILE, 'w') as f:
+            json.dump(state, f, indent=4)
 
 def update_state_for_key(key, data_dict):
     with file_lock:
@@ -50,6 +64,20 @@ def delete_state_for_key(key):
         if key in state:
             del state[key]
             save_state(state)
+
+# --- NEW: Smart File Memory System ---
+def track_file_usage(file_path):
+    if not file_path or str(file_path).upper() == 'NAN': return
+    with file_lock:
+        state = load_state()
+        if 'file_memory' not in state: state['file_memory'] = {}
+        state['file_memory'][str(file_path)] = state['file_memory'].get(str(file_path), 0) + 1
+        save_state(state)
+
+def get_file_memory():
+    with file_lock:
+        return load_state().get('file_memory', {})
+# ---------------------------------------
 
 def flexible_normalize(val):
     val = str(val).strip().upper()
@@ -75,17 +103,17 @@ def process_upload():
 def dashboard():
     cde_path = os.path.join(app.config['UPLOAD_FOLDER'], 'reporting_layers.xlsx')
     if not os.path.exists(cde_path): return redirect(url_for('index'))
-    
+   
     with file_lock:
         xls = pd.ExcelFile(cde_path, engine='openpyxl')
         df = pd.read_excel(xls, 'Sheet1').fillna("")
         df_done = pd.read_excel(xls, 'Done').fillna("") if 'Done' in xls.sheet_names else pd.DataFrame()
-        
+       
     done_keys = {f"{str(row.get('CDE name','')).strip()}|{str(row.get('Current app code','')).strip()}|{str(row.get('Current table/file name','')).strip()}|{str(row.get('Current column/field name','')).strip()}" for _, row in df_done.iterrows()}
 
     if 'Target App Codes' not in df.columns: df['Target App Codes'] = ""
     state_db = load_state()
-    
+   
     grouped = df.groupby('CDE name')
     cdes = []
     metrics = {'total_cdes': len(grouped), 'completed_cdes': 0, 'total_instances': len(df), 'completed_instances': 0, 'needs_review': 0, 'processing': 0, 'auto_resolvable': 0}
@@ -96,16 +124,16 @@ def dashboard():
             target_str = str(apps).strip()
             if target_str.lower() not in ['nan', '']:
                 target_apps.update([app.strip().upper() for app in target_str.split(',') if app.strip()])
-                
+               
         instances = []
         cde_completed = True
-        
+       
         for _, row in group.iterrows():
             app_code = str(row.get("Current app code", "")).strip()
             table = str(row.get("Current table/file name", "")).strip()
             col = str(row.get("Current column/field name", "")).strip()
             key = f"{cde_name}|{app_code}|{table}|{col}"
-            
+           
             if key in done_keys:
                 status = "Completed"
                 metrics['completed_instances'] += 1
@@ -117,25 +145,33 @@ def dashboard():
                 else: status, metrics['auto_resolvable'] = "Pending", metrics['auto_resolvable'] + 1
 
             instances.append({"app": app_code, "table": table, "column": col, "status": status, "key": key, "reason": state_db.get(key, {}).get("reason", "")})
-            
+           
         if cde_completed: metrics['completed_cdes'] += 1
         cdes.append({"name": cde_name, "target_apps": list(target_apps), "instances": instances, "completed": cde_completed})
-        
+       
     return render_template('dashboard.html', metrics=metrics, cdes=cdes)
 
-@app.route('/api/retrace', methods=['POST'])
-def api_retrace():
+# --- NEW: Edit Trace Mode ---
+@app.route('/api/edit_trace', methods=['POST'])
+def edit_trace():
     data = request.json
     cde_name, app_code, table, col = data['cde_name'], data['app'], data['table'], data['column']
+    key = f"{cde_name}|{app_code}|{table}|{col}"
     cde_path = os.path.join(app.config['UPLOAD_FOLDER'], 'reporting_layers.xlsx')
-    
+   
     with file_lock:
         df_done = pd.read_excel(cde_path, sheet_name='Done', engine='openpyxl')
         df_done = df_done[~((df_done['CDE name'] == cde_name) & (df_done['Current app code'] == app_code) & (df_done['Current table/file name'] == table) & (df_done['Current column/field name'] == col))]
         with pd.ExcelWriter(cde_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
             df_done.to_excel(writer, sheet_name='Done', index=False)
-            
-    delete_state_for_key(f"{cde_name}|{app_code}|{table}|{col}")
+    
+    # Push back to Needs Review so user can enter the Trace UI with the stack intact
+    state = load_state()
+    if key in state:
+        state[key]['status'] = "NEEDS_REVIEW"
+        state[key]['reason'] = "Editing Trace Configuration"
+        save_state(state)
+        
     return jsonify({"status": "success"})
 
 @app.route('/trace/<cde_name>/<app_code>/<table_name>/<column_name>')
@@ -143,13 +179,13 @@ def trace(cde_name, app_code, table_name, column_name):
     target_apps = request.args.get('targets', '')
     resume_auto = request.args.get('resume_auto', 'false')
     key = f"{cde_name}|{app_code}|{table_name}|{column_name}"
-    
+   
     session.permanent = True
     if 'lineage_stack' not in session: session['lineage_stack'] = []
-    
+   
     state = load_state()
     resume_stack = state.get(key, {}).get("stack", [])
-    
+   
     return render_template('trace.html', cde_name=cde_name, app_code=app_code, table_name=table_name, column_name=column_name, target_apps=target_apps, resume_stack=json.dumps(resume_stack), resume_auto=resume_auto)
 
 @app.route('/api/undo', methods=['POST'])
@@ -177,7 +213,7 @@ def search_dataframe(df, app_code, table, col):
     df['flex_table'] = df['clean_table'].apply(flexible_normalize)
     df['flex_col'] = df['clean_col'].apply(flexible_normalize)
     normalized_table, normalized_col = flexible_normalize(table), flexible_normalize(col)
-    
+   
     flex = df[(df['clean_app'] == app_code) & (df['flex_table'] == normalized_table) & (df['flex_col'] == normalized_col)]
     if not flex.empty: return flex, "Flexible Match"
 
@@ -198,28 +234,34 @@ def search_dataframe(df, app_code, table, col):
 def execute_search_api_logic(cde_name, app_code, table, col, target_apps):
     primary_path, global_path = os.path.join(app.config['UPLOAD_FOLDER'], 'primary_lineage.xlsx'), os.path.join(app.config['UPLOAD_FOLDER'], 'global_lineage.xlsx')
     unique_groups = []
+    
+    file_memory = get_file_memory()
 
     def process_file(file_path, source_label):
         if not os.path.exists(file_path): return
-        
+       
         with file_lock:
-            # FIXED: Global fillna completely neutralizes NaN poisoning
             df = pd.read_excel(file_path, engine='openpyxl').fillna("")
-            
+           
         matches, match_type = search_dataframe(df, app_code, table, col)
         if matches.empty: return
 
         matches = matches.copy()
-        
+       
         matches['group_id'] = matches['file'].astype(str) + "||" + matches.get('Report name', 'N/A').astype(str) + "||" + matches.get('CDE name', 'N/A').astype(str)
         for gid, group in matches.groupby('group_id'):
             rep_row = group.iloc[0]
             distinct_sources = sorted(group['Source app code'].dropna().astype(str).str.strip().str.upper().unique().tolist())
             if not distinct_sources: continue
 
+            # Apply Smart File Memory Boosting
+            file_name_str = str(rep_row.get('file', 'N/A'))
+            memory_bonus = file_memory.get(file_name_str, 0) * 150000
+
             score = 1000000 if cde_name.upper() in str(rep_row.get('CDE name', '')).upper() else 0
             if any(s in [t.upper() for t in target_apps] for s in distinct_sources): score += 500000
             score += {"Exact Match": 100000, "Flexible Match": 50000, "Fuzzy Match": 25000}.get(match_type, 0)
+            score += memory_bonus
 
             raw_rows = []
             for _, row in group.iterrows():
@@ -233,7 +275,7 @@ def execute_search_api_logic(cde_name, app_code, table, col, target_apps):
 
             if raw_rows:
                 unique_groups.append({
-                    "source": source_label, "score": score, "match_type": match_type, "file_path": str(rep_row.get('file', 'N/A')), "report_name": str(rep_row.get('Report name', 'N/A')),
+                    "source": source_label, "score": score, "match_type": match_type, "file_path": file_name_str, "report_name": str(rep_row.get('Report name', 'N/A')),
                     "cde_found": str(rep_row.get('CDE name', '')), "found_table": str(rep_row.get('Current table/file name', '')), "found_col": str(rep_row.get('Current column/field name', '')),
                     "source_count": len(raw_rows), "distinct_sources": distinct_sources, "raw_rows": raw_rows
                 })
@@ -277,25 +319,24 @@ def write_lineage_to_files(cde_name, stack, is_dead_end):
             seen_lineages.add(lineage_key)
 
             label = f"↓ {curr['app']}" if i == 0 else f"↑ {dest}   ↓ {curr['app']}"
-            
+           
             data_row = curr.get('raw_data', {}).copy()
-            
-            # FIXED: Explicitly map App Names to guarantee they appear on the graph!
+           
             c_name = str(data_row.get('Current app name', '')).strip()
             s_name = str(next_node.get('raw_data', {}).get('Source app name', '')).strip() if i < len(stack) - 1 else ""
 
             data_row.update({
                 "Label": label,
-                "CDE name": cde_name, 
-                "Destination to (App Code)": dest, 
-                "Current app code": curr['app'], 
+                "CDE name": cde_name,
+                "Destination to (App Code)": dest,
+                "Current app code": curr['app'],
                 "Current app name": c_name if c_name.lower() != 'nan' else "",
-                "Current table/file name": curr.get('reconciled_table', curr['original_table']), 
-                "Current column/field name": curr.get('reconciled_col', curr['original_col']), 
-                "Source app code": s_app, 
+                "Current table/file name": curr.get('reconciled_table', curr['original_table']),
+                "Current column/field name": curr.get('reconciled_col', curr['original_col']),
+                "Source app code": s_app,
                 "Source app name": s_name if s_name.lower() != 'nan' else "",
-                "Source table/file name": s_table, 
-                "Source column/field name": s_col, 
+                "Source table/file name": s_table,
+                "Source column/field name": s_col,
                 "QA Notes": curr.get('notes', '')
             })
             output_rows.append(data_row)
@@ -317,6 +358,15 @@ def write_lineage_to_files(cde_name, stack, is_dead_end):
 def save_lineage():
     data = request.json
     write_lineage_to_files(data['cde_name'], data['stack'], data.get('is_dead_end', False))
+    
+    # Store chosen file in memory!
+    if len(data['stack']) > 1 and 'file' in data['stack'][-1].get('raw_data', {}):
+        track_file_usage(data['stack'][-1]['raw_data']['file'])
+        
+    # Keep final stack in state so we can Edit/Review later
+    target_key = f"{data['cde_name']}|{data['stack'][0]['app']}|{data['stack'][0]['original_table']}|{data['stack'][0]['original_col']}"
+    update_state_for_key(target_key, {"status": "RESOLVED", "stack": data['stack'], "timestamp": str(datetime.now())})
+
     if 'lineage_stack' in session:
         session['lineage_stack'] = []
         session.modified = True
@@ -325,25 +375,25 @@ def save_lineage():
 def process_instance_background(cde_name, target_key, initial_raw_data=None):
     try:
         cde_path = os.path.join(app.config['UPLOAD_FOLDER'], 'reporting_layers.xlsx')
-        
+       
         with file_lock:
             xls = pd.ExcelFile(cde_path, engine='openpyxl')
             df = pd.read_excel(xls, 'Sheet1').fillna("")
-        
+       
         target_apps = []
         for _, row in df[df['CDE name'] == cde_name].iterrows():
             target_str = str(row.get("Target App Codes", ""))
             if target_str.lower() != 'nan':
                 target_apps.extend([t.strip().upper() for t in target_str.split(',') if t.strip()])
-        
+       
         with file_lock:
             state = load_state()
             stack = state.get(target_key, {}).get('stack', [])
-            
+           
         if not stack:
             _, app_code, table, col = target_key.split('|')
             stack = [{"app": app_code, "original_table": table, "original_col": col, "reconciled_table": table, "reconciled_col": col, "raw_data": initial_raw_data or {}}]
-            
+           
         update_state_for_key(target_key, {"status": "PROCESSING", "stack": stack, "timestamp": str(datetime.now())})
 
         stacks_to_process = [stack]
@@ -352,20 +402,26 @@ def process_instance_background(cde_name, target_key, initial_raw_data=None):
         while stacks_to_process:
             current_stack = stacks_to_process.pop(0)
             current_node = current_stack[-1]
-            
+           
             candidates = execute_search_api_logic(cde_name, current_node['app'], current_node.get('original_table', current_node.get('reconciled_table')), current_node.get('original_col', current_node.get('reconciled_col')), target_apps)
 
+            # SAFETY STOP 1: DEAD ENDS
             if len(candidates) == 0:
-                completed_paths.append((current_stack, True))
-                continue
-
-            best_cand = candidates[0]
-
-            if best_cand['match_type'] == 'Fuzzy Match':
-                reason = f"Fuzzy Match detected for '{current_node.get('original_table')}'. Human review required."
+                reason = "End of Discovered Lineage (Dead End). Please confirm or Manually Link."
                 update_state_for_key(target_key, {"status": "NEEDS_REVIEW", "stack": current_stack, "reason": reason, "timestamp": str(datetime.now())})
                 return
 
+            best_cand = candidates[0]
+
+            # SAFETY STOP 2: FUZZY MATCH, FLEXIBLE MATCH, OR MULTIPLE FILES
+            if best_cand['match_type'] != 'Exact Match' or len(candidates) > 1:
+                reason = f"{best_cand['match_type']} or Multiple Files detected. Human review required to confirm."
+                update_state_for_key(target_key, {"status": "NEEDS_REVIEW", "stack": current_stack, "reason": reason, "timestamp": str(datetime.now())})
+                return
+
+            # ONLY Single-File, Exact Matches auto-process!
+            track_file_usage(best_cand.get('file_path'))
+            
             for src in best_cand['raw_rows']:
                 new_stack = copy.deepcopy(current_stack)
                 new_stack[-1]['reconciled_table'] = best_cand['found_table']
@@ -374,11 +430,11 @@ def process_instance_background(cde_name, target_key, initial_raw_data=None):
 
                 next_app = src['next_app']
                 new_node = {
-                    "app": next_app, 
-                    "original_table": src['next_table'], 
-                    "original_col": src['next_col'], 
-                    "reconciled_table": src['next_table'], 
-                    "reconciled_col": src['next_col'], 
+                    "app": next_app,
+                    "original_table": src['next_table'],
+                    "original_col": src['next_col'],
+                    "reconciled_table": src['next_table'],
+                    "reconciled_col": src['next_col'],
                     "raw_data": src['raw_row_data']
                 }
                 new_stack.append(new_node)
@@ -392,7 +448,7 @@ def process_instance_background(cde_name, target_key, initial_raw_data=None):
         for path, is_dead_end in completed_paths:
             write_lineage_to_files(cde_name, path, is_dead_end)
 
-        update_state_for_key(target_key, {"status": "RESOLVED", "timestamp": str(datetime.now())})
+        update_state_for_key(target_key, {"status": "RESOLVED", "stack": current_stack, "timestamp": str(datetime.now())})
 
     except Exception as e:
         error_msg = f"System Error: {str(e)}"
@@ -402,39 +458,39 @@ def process_instance_background(cde_name, target_key, initial_raw_data=None):
 @app.route('/api/auto_resolve/start', methods=['POST'])
 def start_auto_resolve():
     cde_path = os.path.join(app.config['UPLOAD_FOLDER'], 'reporting_layers.xlsx')
-    
+   
     with file_lock:
         xls = pd.ExcelFile(cde_path, engine='openpyxl')
         df = pd.read_excel(xls, 'Sheet1').fillna("")
         df_done = pd.read_excel(xls, 'Done').fillna("") if 'Done' in xls.sheet_names else pd.DataFrame()
-        
+       
     done_keys = {f"{str(row.get('CDE name','')).strip()}|{str(row.get('Current app code','')).strip()}|{str(row.get('Current table/file name','')).strip()}|{str(row.get('Current column/field name','')).strip()}" for _, row in df_done.iterrows()}
-    
+   
     state = load_state()
     for _, row in df.iterrows():
         c_name = str(row.get("CDE name", "")).strip()
         c_app = str(row.get("Current app code", "")).strip()
         c_tab = str(row.get("Current table/file name", "")).strip()
         c_col = str(row.get("Current column/field name", "")).strip()
-        
+       
         key = f"{c_name}|{c_app}|{c_tab}|{c_col}"
-        
+       
         if key not in done_keys and state.get(key, {}).get("status") != "NEEDS_REVIEW":
-            raw_data = row.to_dict() 
+            raw_data = row.to_dict()
             executor.submit(process_instance_background, c_name, key, raw_data)
-            
+           
     return jsonify({"status": "Bulk job started"})
 
 @app.route('/api/auto_resolve/single', methods=['POST'])
 def start_single_auto_resolve():
     data = request.json
     target_key = f"{data['cde_name']}|{data['app']}|{data['table']}|{data['column']}"
-    
+   
     with file_lock:
         df = pd.read_excel(os.path.join(app.config['UPLOAD_FOLDER'], 'reporting_layers.xlsx'), 'Sheet1', engine='openpyxl').fillna("")
         row = df[(df['CDE name'] == data['cde_name']) & (df['Current app code'] == data['app'])].iloc[0]
         raw_data = row.to_dict()
-        
+       
     executor.submit(process_instance_background, data['cde_name'], target_key, raw_data)
     return jsonify({"status": "Single instance job started"})
 
@@ -444,6 +500,10 @@ def resume_auto_resolve():
     cde_name, stack = data['cde_name'], data['stack']
     target_key = f"{cde_name}|{stack[0]['app']}|{stack[0]['original_table']}|{stack[0]['original_col']}"
     
+    # Store chosen file in memory!
+    if len(stack) > 1 and 'file' in stack[-1].get('raw_data', {}):
+        track_file_usage(stack[-1]['raw_data']['file'])
+   
     update_state_for_key(target_key, {"status": "PROCESSING", "stack": stack, "timestamp": str(datetime.now())})
     executor.submit(process_instance_background, cde_name, target_key)
     return jsonify({"status": "Resumed in background"})
@@ -462,27 +522,27 @@ def api_graph(cde_name):
 
         with file_lock:
             df = pd.read_excel(output_file, engine='openpyxl').fillna("")
-        
+       
         inst_nodes, inst_edges = {}, {}
         app_nodes, app_edges = {}, {}
         app_meta = {}
 
         for _, row in df.iterrows():
             if not str(row.get('CDE name', '')).strip(): continue
-            
+           
             c_app = str(row.get('Current app code', '')).strip().upper()
             if not c_app or c_app.lower() == 'nan': continue
-            
+           
             c_name_val = str(row.get('Current app name', '')).strip()
             c_name = c_name_val if c_name_val.lower() not in ['nan', ''] else c_app
-            
+           
             c_tab = str(row.get('Current table/file name', '')).strip()
             c_col = str(row.get('Current column/field name', '')).strip()
-            
+           
             s_app = str(row.get('Source app code', '')).strip().upper()
             s_name_val = str(row.get('Source app name', '')).strip()
             s_name = s_name_val if s_name_val.lower() not in ['nan', ''] else s_app
-            
+           
             s_tab = str(row.get('Source table/file name', '')).strip()
             s_col = str(row.get('Source column/field name', '')).strip()
 
@@ -492,11 +552,11 @@ def api_graph(cde_name):
 
             if c_app not in app_meta:
                 app_meta[c_app] = {'code': c_app, 'name': c_name, 'manual': False, 'transformed': False, 'filtered': False, 'instances': []}
-            
+           
             app_meta[c_app]['manual'] = app_meta[c_app]['manual'] or is_manual
             app_meta[c_app]['transformed'] = app_meta[c_app]['transformed'] or is_transformed
             app_meta[c_app]['filtered'] = app_meta[c_app]['filtered'] or is_filtered
-            
+           
             inst_entry = {'table': c_tab, 'col': c_col}
             if inst_entry not in app_meta[c_app]['instances']:
                 app_meta[c_app]['instances'].append(inst_entry)
@@ -509,13 +569,13 @@ def api_graph(cde_name):
                 s_id = f"{s_app}|{s_tab.upper()}|{s_col.upper()}"
                 if s_id not in inst_nodes:
                     inst_nodes[s_id] = {"id": s_id, "label": f"🏢 Name: {s_name}\n🔑 Code: {s_app}\n📁 Table: {s_tab}\n📌 Col: {s_col}", "shape": "box", "color": {"background": "#E2E8F0", "border": "#64748B"}, "font": {"face": "monospace", "align": "left"}}
-                
+               
                 e_id = f"{s_id}->{c_id}"
                 inst_edges[e_id] = {"from": s_id, "to": c_id, "arrows": "to", "color": {"color": "#005DAA"}}
 
                 if s_app not in app_meta:
                     app_meta[s_app] = {'code': s_app, 'name': s_name, 'manual': False, 'transformed': False, 'filtered': False, 'instances': []}
-                
+               
                 e_app_id = f"{s_app}->{c_app}"
                 if e_app_id not in app_edges:
                     app_edges[e_app_id] = {"from": s_app, "to": c_app, "arrows": "to", "color": {"color": "#10B981"}, "width": 2}

@@ -1,14 +1,32 @@
 {% extends 'base.html' %}
 
 {% block content %}
-<div x-data="tracingApp()" x-init="initTrace()" class="max-w-7xl mx-auto h-[85vh] flex flex-col">
+<div x-data="tracingApp()" x-init="initTrace()" class="max-w-7xl mx-auto h-[85vh] flex flex-col relative">
+
+    <!-- Pop-up Modal for Details -->
+    <div x-show="showModal" class="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center" style="display: none;">
+        <div class="bg-white rounded-lg shadow-xl w-3/4 max-w-3xl max-h-[80vh] flex flex-col" @click.away="showModal = false">
+            <div class="p-4 border-b bg-gray-50 flex justify-between items-center rounded-t-lg">
+                <h3 class="font-bold text-rbcBlue text-lg">Instance Schema Details</h3>
+                <button @click="showModal = false" class="text-gray-400 hover:text-red-500 font-bold text-xl">&times;</button>
+            </div>
+            <div class="p-4 overflow-y-auto grid grid-cols-2 gap-4 text-xs font-mono">
+                <template x-for="(val, key) in modalData" :key="key">
+                    <div x-show="val && val !== 'nan' && val !== ''" class="bg-gray-50 p-2 rounded border border-gray-200">
+                        <span class="font-bold text-gray-500 block mb-1 uppercase" x-text="key"></span>
+                        <span class="text-gray-900 break-all" x-text="val"></span>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </div>
 
     <!-- Path & Branches Header -->
     <div class="bg-white shadow rounded-lg p-4 mb-4 border border-gray-200">
         <div class="flex justify-between items-center text-sm mb-3 border-b pb-2">
             <div>
                 <span class="font-bold text-gray-700">Tracing: <span class="text-rbcBlue">{{ cde_name }}</span></span>
-                <span x-show="resumeMode" class="ml-2 bg-yellow-100 text-yellow-800 text-[10px] font-bold px-2 py-0.5 rounded shadow-sm border border-yellow-200">AUTO-RESOLVE MANUAL REVIEW MODE</span>
+                <span x-show="resumeMode" class="ml-2 bg-yellow-100 text-yellow-800 text-[10px] font-bold px-2 py-0.5 rounded shadow-sm border border-yellow-200">EDIT / REVIEW MODE</span>
             </div>
             
             <button x-show="stack.length > 1 || undoHistory.length > 1" @click="undo()" :disabled="loading" :class="loading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-red-200 hover:text-red-700'" class="bg-gray-200 text-gray-700 font-bold py-1 px-3 rounded text-xs transition duration-200">
@@ -16,7 +34,6 @@
             </button>
         </div>
         
-        <!-- REQ 2: Better Branch Visualization -->
         <div class="space-y-1.5 max-h-32 overflow-y-auto mt-2">
             <template x-for="(path, pIdx) in completedPaths" :key="'comp'+pIdx">
                 <div class="flex items-center bg-green-50 p-1 rounded opacity-75 text-[10px] border border-green-100">
@@ -77,80 +94,49 @@
                     <h3 class="text-lg font-bold">End of Discovered Lineage</h3>
                 </div>
 
-                <!-- REQ 4: Exact Real Data Schema Layout -->
-                <div class="bg-gray-50 rounded border border-gray-200 mb-5">
-                    <div class="bg-gray-200 px-3 py-1.5 rounded-t"><h4 class="text-xs font-bold text-gray-700 uppercase">Current Instance Detailed Metadata</h4></div>
-                    <div class="p-3 grid grid-cols-2 gap-x-4 gap-y-2 text-[11px]">
-                        <div><span class="font-bold text-gray-500">App Name:</span> <span class="text-gray-800" x-text="getMeta('Current app name')"></span></div>
-                        <div><span class="font-bold text-gray-500">Ownership:</span> <span class="text-gray-800" x-text="getMeta('Current App Ownership (RBC Owned or Vendor Managed)')"></span></div>
-                        <div><span class="font-bold text-gray-500">Creation Method:</span> <span class="text-blue-700 font-bold" x-text="getMeta('Created/Sourced') + ' / ' + getMeta('Manually entered/Derived')"></span></div>
-                        <div><span class="font-bold text-gray-500">Current Schema:</span> <span class="text-gray-800" x-text="getMeta('Schema')"></span></div>
-                        <div class="col-span-2 border-t pt-1 mt-1"><span class="font-bold text-gray-500">Screen UI (Manual Entry):</span> <span class="text-gray-800 font-mono" x-text="getMeta('Screen Name (UI)') + ' > ' + getMeta('Screen Field Name (UI)')"></span></div>
-                        <div class="col-span-2"><span class="font-bold text-gray-500">File Path:</span> <span class="text-gray-800 font-mono text-[9px] break-all" x-text="getMeta('file')"></span></div>
-                        <div class="col-span-2 border-t pt-1 mt-1"><span class="font-bold text-gray-500">Transformation:</span> <span class="text-gray-800" x-text="getMeta('Transformation Logic', 'Transformation Description')"></span></div>
-                        <div class="col-span-2"><span class="font-bold text-gray-500">Filtration:</span> <span class="text-gray-800" x-text="getMeta('Filtration Logic', 'Filtration Description')"></span></div>
-                        <div class="col-span-2"><span class="font-bold text-gray-500">Field Type / Desc:</span> <span class="text-gray-800" x-text="getMeta('Data Element Field Type') + ' - ' + getMeta('Field Description')"></span></div>
-                    </div>
-                </div>
-
                 <div x-show="!showManualInput" class="flex flex-col space-y-3">
                     <button @click="finishLineage(true)" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded shadow transition">✓ Confirm End of Lineage</button>
                     <button @click="showManualInput = true" class="w-full bg-white hover:bg-gray-50 text-rbcBlue border-2 border-rbcBlue font-bold py-2 px-4 rounded shadow transition">➕ Manually Continue Investigation</button>
                 </div>
 
-                                <!-- Manual Input Form -->
-                <div x-show="showManualInput" x-transition class="bg-blue-50 p-4 rounded border border-blue-200">
+                <!-- Manual Input Form -->
+                <div x-show="showManualInput" x-transition class="bg-blue-50 p-4 rounded border border-blue-200 mt-4">
                     <h4 class="text-xs font-bold text-rbcBlue uppercase tracking-wider mb-3">Define Next Source</h4>
                     <div class="grid grid-cols-1 gap-3 text-sm mb-4">
                         <div><label class="block font-bold text-gray-700 mb-1">Source App Code *</label><input type="text" x-model="manualApp" class="w-full border rounded p-2 uppercase focus:ring-rbcBlue"></div>
                         <div><label class="block font-bold text-gray-700 mb-1">Source Table / File *</label><input type="text" x-model="manualTable" class="w-full border rounded p-2 focus:ring-rbcBlue"></div>
                         <div><label class="block font-bold text-gray-700 mb-1">Source Column / Field *</label><input type="text" x-model="manualCol" class="w-full border rounded p-2 focus:ring-rbcBlue"></div>
                     </div>
-
-                    <!-- Manual Standardization Options -->
-                    <div x-show="manualTable || manualCol" class="bg-yellow-50 border border-yellow-200 rounded p-3 mb-4">
-                        <label class="block text-[10px] font-bold text-yellow-800 uppercase mb-2">Standardization Output Option:</label>
-                        <div class="space-y-2">
-                            <label class="flex items-center p-2 border border-yellow-200 rounded cursor-pointer bg-white hover:bg-yellow-100">
-                                <input type="radio" value="current" x-model="manualStitchChoice" class="w-4 h-4 text-rbcBlue">
-                                <span class="ml-3 text-xs"><b>Keep Current:</b> <span x-text="currentNode.original_table + '.' + currentNode.original_col"></span></span>
-                            </label>
-                            <label class="flex items-center p-2 border border-yellow-200 rounded cursor-pointer bg-white hover:bg-yellow-100">
-                                <input type="radio" value="manual" x-model="manualStitchChoice" class="w-4 h-4 text-rbcBlue">
-                                <span class="ml-3 text-xs"><b>Keep Manual:</b> <span x-text="manualTable + '.' + manualCol"></span></span>
-                            </label>
-                            <label class="flex items-center p-2 border border-yellow-200 rounded cursor-pointer bg-yellow-100 shadow-sm">
-                                <input type="radio" value="concat" x-model="manualStitchChoice" class="w-4 h-4 text-rbcBlue">
-                                <span class="ml-3 text-xs"><b>Concatenate:</b> <span x-text="(currentNode.original_table === manualTable ? manualTable : currentNode.original_table + '/' + manualTable) + '.' + (currentNode.original_col === manualCol ? manualCol : currentNode.original_col + '/' + manualCol)"></span></span>
-                            </label>
-                        </div>
-                    </div>
-
                     <div class="flex gap-2">
                         <button @click="showManualInput = false" class="w-1/3 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 px-4 rounded transition">Cancel</button>
                         <button @click="submitManualSource()" :disabled="!manualApp || !manualTable || !manualCol" class="w-2/3 bg-rbcYellow hover:bg-yellow-500 text-gray-900 font-bold py-2 px-4 rounded transition disabled:opacity-50">Trace Manual Entry →</button>
                     </div>
                 </div>
-
             </div>
 
             <div x-show="candidates.length > 0">
                 <h2 class="text-lg font-bold text-gray-800 mb-4 border-b pb-2">Select Source (Available Options)</h2>
                 <div class="space-y-4">
                     <template x-for="(cand, idx) in candidates" :key="idx">
-                        <div class="border border-gray-300 rounded-lg p-5 bg-white shadow-sm hover:border-rbcBlue transition">
-                            <div class="flex justify-between items-center mb-3">
-                                <div class="flex gap-2">
+                        <div class="border border-gray-300 rounded-lg p-5 bg-white shadow-sm hover:border-rbcBlue transition relative">
+                            <!-- Info Button -->
+                            <button @click="modalData = cand.raw_rows[0].raw_row_data; showModal = true" class="absolute top-4 right-4 text-gray-400 hover:text-rbcBlue transition" title="View Full Data Row">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            </button>
+
+                            <div class="mb-3">
+                                <div class="flex gap-2 mb-2">
                                     <span class="px-2 py-0.5 text-[10px] font-bold uppercase rounded text-white" :class="cand.source === 'Global Lineage' ? 'bg-purple-500' : 'bg-rbcBlue'" x-text="cand.source"></span>
                                     <span class="px-2 py-0.5 text-[10px] font-bold uppercase rounded" :class="cand.match_type.includes('Exact') ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'" x-text="cand.match_type"></span>
                                 </div>
+                                <p class="text-[10px] text-gray-500 font-bold uppercase">Source File: <span class="text-rbcBlue normal-case tracking-tight" x-text="cand.file_path"></span></p>
                             </div>
                             
                             <div class="mb-3 border-l-4 border-rbcBlue pl-3 py-2 bg-blue-50 text-sm">
                                 <p><span class="font-bold text-[10px] text-gray-600 uppercase">Found Table:</span> <span class="font-mono font-bold text-rbcBlue" x-text="cand.found_table"></span></p>
                                 <p><span class="font-bold text-[10px] text-gray-600 uppercase">Found Column:</span> <span class="font-mono text-gray-800" x-text="cand.found_col"></span></p>
                             </div>
-                            <!-- PERFECTED FUZZY STITCHING -->
+                            
                             <template x-if="cand.raw_rows && cand.raw_rows[0] && (cand.raw_rows[0].match_type.includes('Fuzzy') || cand.raw_rows[0].match_type.includes('Flexible'))">
                                 <div class="mb-3 bg-yellow-50 border border-yellow-200 rounded p-3">
                                     <label class="block text-[10px] font-bold text-yellow-800 uppercase mb-2">⚠️ Fuzzy Match Found - Standardization Output:</label>
@@ -165,14 +151,14 @@
                                         </label>
                                         <label class="flex items-center p-2 border border-yellow-200 rounded cursor-pointer bg-yellow-100 shadow-sm">
                                             <input type="radio" value="concat" x-model="cand.stitchChoice" class="w-4 h-4">
-                                            <span class="ml-3 text-xs"><span class="font-bold text-gray-700">Concatenate (Smart):</span> 
+                                            <span class="ml-3 text-xs"><span class="font-bold text-gray-700">Concatenate:</span> 
                                             <span class="font-mono text-gray-900" x-text="(cand.raw_rows[0].searched_table === cand.found_table ? cand.found_table : cand.raw_rows[0].searched_table + '/' + cand.found_table) + '.' + (cand.raw_rows[0].searched_col === cand.found_col ? cand.found_col : cand.raw_rows[0].searched_col + '/' + cand.found_col)"></span>
                                             </span>
                                         </label>
                                     </div>
-                                    <p class="text-[10px] text-yellow-700 mt-2 font-bold uppercase">This value will be applied to the Source and Current fields to perfectly stitch the lineage flow.</p>
                                 </div>
                             </template>
+                            
                             <div class="bg-gray-100 border border-gray-200 rounded p-3 flex justify-between items-center mt-3">
                                 <div>
                                     <p class="text-[10px] text-gray-600 font-bold uppercase mb-1">Source Apps (<span x-text="cand.source_count"></span>):</p>
@@ -183,11 +169,10 @@
                                     </div>
                                 </div>
                                 
-                                <!-- REQ 1: Resume Auto-Resolve Button -->
                                 <template x-if="resumeMode">
                                     <button @click="resumeAutoResolve(cand)" :disabled="loading" class="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded shadow transition text-sm flex items-center">
                                         <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                                        Confirm & Resume Auto-Resolve
+                                        Confirm & Resume
                                     </button>
                                 </template>
                                 <template x-if="!resumeMode">
@@ -219,6 +204,7 @@
             loading: false,
             undoHistory: [],
             showManualInput: false, manualApp: '', manualTable: '', manualCol: '', manualStitchChoice: 'concat',
+            showModal: false, modalData: null,
 
             snapshotState() { return JSON.stringify({ stack: this.stack, pendingBranches: this.pendingBranches, completedPaths: this.completedPaths, currentNode: this.currentNode }); },
 
@@ -238,14 +224,6 @@
 
             isTargetApp(appCode) { return this.targetApps.includes((appCode || "").toUpperCase()); },
 
-            getMeta(...keys) {
-                if (!this.currentNode.raw_data) return "N/A";
-                for (let key of keys) {
-                    if (this.currentNode.raw_data[key] && String(this.currentNode.raw_data[key]).trim() !== '') return this.currentNode.raw_data[key];
-                }
-                return "N/A";
-            },
-
             async searchCandidates() {
                 this.loading = true;
                 this.showManualInput = false;
@@ -259,7 +237,6 @@
                 } catch (e) { alert("Error: " + e.message); } finally { this.loading = false; }
             },
 
-            // --> FIXED: ADDED THE MISSING getStitchedValues FUNCTION <--
             getStitchedValues(cand) {
                 let st = (cand.raw_rows && cand.raw_rows[0] && cand.raw_rows[0].searched_table) ? cand.raw_rows[0].searched_table : this.currentNode.original_table;
                 let sc = (cand.raw_rows && cand.raw_rows[0] && cand.raw_rows[0].searched_col) ? cand.raw_rows[0].searched_col : this.currentNode.original_col;
@@ -269,7 +246,6 @@
                 if (cand.stitchChoice === 'searched') return { table: st, col: sc };
                 if (cand.stitchChoice === 'found') return { table: ft, col: fc };
                 
-                // Concat (Smart)
                 return {
                     table: (st === ft) ? ft : `${st}/${ft}`,
                     col: (sc === fc) ? fc : `${sc}/${fc}`
@@ -365,16 +341,6 @@
                     this.undoHistory.pop();
                     let prev = JSON.parse(this.undoHistory[this.undoHistory.length - 1]);
                     this.stack = prev.stack; this.pendingBranches = prev.pendingBranches; this.completedPaths = prev.completedPaths; this.currentNode = prev.currentNode;
-                    this.searchCandidates();
-                }
-            },
-
-            resetTrace() {
-                if (confirm('🔄 Reset entire trace?')) {
-                    this.stack = [{ app: "{{ app_code }}", original_table: "{{ table_name }}", original_col: "{{ column_name }}", notes: "", reconciled_table: "{{ table_name }}", reconciled_col: "{{ column_name }}" }];
-                    this.pendingBranches = []; this.completedPaths = []; this.candidates = [];
-                    this.currentNode = { ...this.stack[0] };
-                    this.undoHistory = [this.snapshotState()];
                     this.searchCandidates();
                 }
             },

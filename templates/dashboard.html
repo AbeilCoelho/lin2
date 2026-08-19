@@ -3,12 +3,10 @@
 {% block content %}
 <div class="mb-6 flex justify-between items-end">
     <div>
-        <h1 class="text-2xl font-bold text-gray-900">Project Dashboard</h1>
+        <h1 class="text-2xl font-bold text-gray-900">Report Dashboard</h1>
         <p class="text-gray-600 mt-1">Track lineage progress and manage CDE instances.</p>
     </div>
-    
-    <button id="resolveBtn" 
-            onclick="startAutoResolve()" 
+    <button id="resolveBtn"  onclick="startAutoResolve()" 
             {% if metrics.auto_resolvable == 0 %} disabled {% endif %}
             class="font-bold py-2 px-4 rounded shadow flex items-center transition 
                    {% if metrics.auto_resolvable == 0 %} bg-gray-300 text-gray-500 cursor-not-allowed {% else %} bg-rbcBlue text-white hover:bg-rbcBlueDark {% endif %}">
@@ -17,8 +15,7 @@
     </button>
 </div>
 
-<!-- ADDED ID for Real-Time DOM Swapping -->
-<div id="metrics-grid" class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
+<div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
     <div class="bg-white rounded-lg shadow p-4 border-l-4 border-gray-400">
         <p class="text-[10px] font-bold text-gray-500 uppercase">Total Instances</p>
         <p class="mt-1 text-xl font-semibold text-gray-900">{{ metrics.total_instances }}</p>
@@ -33,7 +30,7 @@
     </div>
     <div class="bg-white rounded-lg shadow p-4 border-l-4 border-red-500">
         <p class="text-[10px] font-bold text-red-600 uppercase">Needs Review</p>
-        <p class="mt-1 text-xl font-semibold text-gray-900 {% if metrics.needs_review > 0 %} animate-pulse {% endif %}">{{ metrics.needs_review }}</p>
+        <p class="mt-1 text-xl font-semibold text-gray-900 {% if metrics.needs_review > 0 %} animate-pulse text-red-600 {% endif %}">{{ metrics.needs_review }}</p>
     </div>
     <div class="bg-white rounded-lg shadow p-4 border-l-4 border-blue-400 bg-blue-50">
         <p class="text-[10px] font-bold text-blue-600 uppercase">Processing Queue</p>
@@ -51,16 +48,12 @@
                 <th class="px-6 py-3 text-right text-xs font-bold text-gray-500 uppercase">Action</th>
             </tr>
         </thead>
-        <!-- ADDED ID for Real-Time DOM Swapping -->
-        <tbody id="table-body" class="bg-white divide-y divide-gray-200">
+        <tbody class="bg-white divide-y divide-gray-200" id="table-body">
             {% for cde in cdes %}
                 {% for instance in cde.instances %}
                 <tr class="hover:bg-gray-50 transition" {% if instance.status == 'Completed' %}class="bg-green-50"{% endif %}>
                     <td class="px-6 py-4 text-sm font-semibold text-gray-900">
-                        {% if loop.first %}
-                            {{ cde.name }}
-                            {% if cde.completed %} <span class="ml-2 text-xs text-green-600 font-bold">✓ Done</span> {% endif %}
-                        {% endif %}
+                        {% if loop.first %}{{ cde.name }}{% endif %}
                     </td>
                     <td class="px-6 py-4">
                         <div class="text-sm font-mono font-bold text-gray-700">{{ instance.app }}</div>
@@ -68,29 +61,30 @@
                     </td>
                     <td class="px-6 py-4">
                         {% if instance.status == 'Completed' %}
-                            <span class="px-2 inline-flex text-xs font-semibold rounded-full bg-green-100 text-green-800 shadow-sm">Completed</span>
+                            <span class="px-2 inline-flex text-xs font-semibold rounded-full bg-green-100 text-green-800">Completed</span>
                         {% elif instance.status == 'Needs Review' %}
                             <span class="px-2 inline-flex text-xs font-semibold rounded-full bg-red-100 text-red-800 animate-pulse shadow-sm">⚠ Needs Review</span>
                             <div class="text-[10px] text-red-500 mt-1 max-w-[150px] leading-tight">{{ instance.reason }}</div>
                         {% elif instance.status == 'Processing' %}
-                            <span class="px-2 inline-flex text-xs font-semibold rounded-full bg-blue-100 text-blue-800 shadow-sm">⏳ Processing</span>
+                            <span class="px-2 inline-flex text-xs font-semibold rounded-full bg-blue-100 text-blue-800">⏳ Processing</span>
                         {% else %}
-                            <span class="px-2 inline-flex text-xs font-semibold rounded-full bg-gray-100 text-gray-800 border border-gray-200">Pending</span>
+                            <span class="px-2 inline-flex text-xs font-semibold rounded-full bg-gray-100 text-gray-800">Pending</span>
                         {% endif %}
                     </td>
                     <td class="px-6 py-4 text-right text-sm font-medium">
                         {% if instance.status == 'Completed' %}
                             <div class="flex justify-end gap-2">
-                                <button onclick="retrace('{{ cde.name|escape }}', '{{ instance.app|escape }}', '{{ instance.table|escape }}', '{{ instance.column|escape }}')" class="text-gray-500 border border-gray-300 px-3 py-1 rounded hover:bg-gray-100 font-bold transition">Retrace</button>
+                                <!-- EDITED: We now Edit/Review instead of erasing the retrace -->
+                                <button onclick="editTrace('{{ cde.name|escape }}', '{{ instance.app|escape }}', '{{ instance.table|escape }}', '{{ instance.column|escape }}')" class="text-gray-500 border border-gray-300 px-3 py-1 rounded hover:bg-gray-100 font-bold transition">Edit Trace</button>
                                 <a href="/view_lineage/{{ cde.name|urlencode }}" class="text-green-600 border border-green-600 px-3 py-1 rounded hover:bg-green-50 font-bold transition">View Flow</a>
                             </div>
                         {% elif instance.status == 'Needs Review' %}
                             <a href="/trace/{{ cde.name|urlencode }}/{{ instance.app|urlencode }}/{{ instance.table|urlencode }}/{{ instance.column|urlencode }}?targets={{ cde.target_apps|join(',')|urlencode }}&resume_auto=true" 
-                               class="bg-red-500 text-white font-bold px-4 py-1.5 rounded shadow hover:bg-red-600 block w-fit ml-auto transition">
-                               Resolve Issue &rarr;
+                            class="bg-red-500 text-white font-bold px-4 py-1.5 rounded shadow hover:bg-red-600 block w-fit ml-auto transition">
+                            Resolve Issue &rarr;
                             </a>
                         {% elif instance.status == 'Processing' %}
-                            <span class="text-blue-500 italic block w-fit ml-auto animate-pulse text-xs font-bold">Running in background...</span>
+                            <span class="text-blue-500 italic block w-fit ml-auto animate-pulse">Running...</span>
                         {% else %}
                             <div class="flex justify-end gap-2">
                                 <button onclick="autoResolveSingle('{{ cde.name|escape }}', '{{ instance.app|escape }}', '{{ instance.table|escape }}', '{{ instance.column|escape }}')" 
@@ -113,18 +107,12 @@
     let pollInterval = null;
 
     function startPolling() {
-        // Poll every 1.5 seconds for a fast, responsive UI
-        if (!pollInterval) {
-            pollInterval = setInterval(refreshUI, 1500);
-        }
+        if (!pollInterval) pollInterval = setInterval(refreshUI, 1500);
     }
-
     function stopPolling() {
         if (pollInterval) {
             clearInterval(pollInterval);
             pollInterval = null;
-            
-            // Reset the bulk button text if it was stuck
             const btn = document.getElementById('resolveBtn');
             if (btn && btn.innerText.includes("Started")) {
                 btn.innerHTML = `<svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>Run Bulk Auto-Resolve`;
@@ -132,82 +120,49 @@
         }
     }
 
-    // This function silently fetches the new HTML and swaps it in without refreshing the page!
     async function refreshUI() {
         try {
             const response = await fetch('/dashboard');
             const htmlText = await response.text();
+            const doc = new DOMParser().parseFromString(htmlText, 'text/html');
             
-            // Parse the new HTML in memory
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(htmlText, 'text/html');
-            
-            // Swap the Metrics Grid
-            const newMetrics = doc.getElementById('metrics-grid');
-            if (newMetrics) document.getElementById('metrics-grid').innerHTML = newMetrics.innerHTML;
-            
-            // Swap the Table Body
             const newTable = doc.getElementById('table-body');
             if (newTable) document.getElementById('table-body').innerHTML = newTable.innerHTML;
             
-            // Swap the Top Button (unless we just clicked it and it says "Job Started")
-            const oldBtn = document.getElementById('resolveBtn');
-            const newBtn = doc.getElementById('resolveBtn');
-            if (oldBtn && newBtn && !oldBtn.innerText.includes("Started")) {
-                oldBtn.outerHTML = newBtn.outerHTML;
-            }
-
-            // Check if we should STOP polling (Processing queue is 0)
             const processingNode = doc.getElementById('metric-processing');
-            const processingCount = processingNode ? parseInt(processingNode.innerText) : 0;
-            
-            if (processingCount === 0) {
-                stopPolling();
-            }
-
-        } catch (e) {
-            console.error("Polling error:", e);
-        }
+            if (processingNode && parseInt(processingNode.innerText) === 0) stopPolling();
+        } catch (e) { console.error("Polling error:", e); }
     }
 
-    // Check if jobs were already processing when the page loaded
     document.addEventListener("DOMContentLoaded", () => {
         const processingNode = document.getElementById('metric-processing');
-        if (processingNode && parseInt(processingNode.innerText) > 0) {
-            startPolling();
-        }
+        if (processingNode && parseInt(processingNode.innerText) > 0) startPolling();
     });
 
     async function startAutoResolve() {
         document.getElementById('resolveBtn').innerText = "Job Started in Background...";
         await fetch('/api/auto_resolve/start', { method: 'POST' });
-        
-        // Instantly force a UI refresh and begin polling
         refreshUI();
         startPolling();
     }
 
     async function autoResolveSingle(cde, app, table, col) {
         await fetch('/api/auto_resolve/single', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({cde_name: cde, app: app, table: table, column: col})
         });
-        
-        // Instantly force a UI refresh and begin polling
         refreshUI();
         startPolling();
     }
 
-    async function retrace(cde, app, table, col) {
-        if(confirm("Are you sure? This will remove the instance from 'Done' and allow you to map it again.")) {
-            await fetch('/api/retrace', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({cde_name: cde, app: app, table: table, column: col})
-            });
-            window.location.reload(); // Hard reload is fine for Retrace
-        }
+    // --- NEW: Edit Trace function ---
+    async function editTrace(cde, app, table, col) {
+        await fetch('/api/edit_trace', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({cde_name: cde, app: app, table: table, column: col})
+        });
+        window.location.href = `/trace/${encodeURIComponent(cde)}/${encodeURIComponent(app)}/${encodeURIComponent(table)}/${encodeURIComponent(col)}?resume_auto=true`;
     }
 </script>
 {% endblock %}
