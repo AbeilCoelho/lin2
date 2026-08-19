@@ -400,48 +400,48 @@ def api_retrace():
 
 @app.route("/trace/<cde_name>/<app_code>/<table_name>/<column_name>")
 def trace(cde_name, app_code, table_name, column_name):
-    project = session["active_project"]
+    project = session['active_project']
     target_apps = request.args.get("targets", "")
     resume_auto = request.args.get("resume_auto", "false")
     key = f"{cde_name}|{app_code}|{table_name}|{column_name}"
 
     session.permanent = True
-    if "lineage_stack" not in session:
-        session["lineage_stack"] = []
+    if "lineage_stack" not in session: session["lineage_stack"] = []
 
     state = load_state(project)
-    resume_stack = state.get(key, {}).get("stack", [])
+    resume_data = state.get(key, {})
+    
+    # FIXED: Pull the entire workspace state out of the JSON file
+    resume_stack = resume_data.get("stack", [])
+    resume_pending = resume_data.get("pendingBranches", [])
+    resume_completed = resume_data.get("completedPaths", [])
 
     return render_template(
-        "trace.html",
-        cde_name=cde_name,
-        app_code=app_code,
-        table_name=table_name,
-        column_name=column_name,
-        target_apps=target_apps,
-        resume_stack=json.dumps(resume_stack),
-        resume_auto=resume_auto,
+        "trace.html", 
+        cde_name=cde_name, app_code=app_code, table_name=table_name, column_name=column_name, 
+        target_apps=target_apps, resume_auto=resume_auto,
+        resume_stack=json.dumps(resume_stack), 
+        resume_pending=json.dumps(resume_pending),
+        resume_completed=json.dumps(resume_completed)
     )
 
 
 # --- NEW: SAVE MIDWAY ---
 @app.route("/api/save_midway", methods=["POST"])
 def save_midway():
-    project = session["active_project"]
+    project = session['active_project']
     data = request.json
     cde_name, stack = data["cde_name"], data["stack"]
     target_key = f"{cde_name}|{stack[0]['app']}|{stack[0]['original_table']}|{stack[0]['original_col']}"
-
-    update_state_for_key(
-        project,
-        target_key,
-        {
-            "status": "NEEDS_REVIEW",
-            "stack": stack,
-            "reason": "Midway Save by User (Paused)",
-            "timestamp": str(datetime.now()),
-        },
-    )
+    
+    update_state_for_key(project, target_key, {
+        "status": "NEEDS_REVIEW", 
+        "stack": stack, 
+        "pendingBranches": data.get("pendingBranches", []),  # FIXED: Save pending branches
+        "completedPaths": data.get("completedPaths", []),    # FIXED: Save completed paths
+        "reason": "Midway Save by User (Paused)", 
+        "timestamp": str(datetime.now())
+    })
     return jsonify({"status": "success"})
 
 
@@ -802,13 +802,9 @@ def save_lineage():
     return jsonify({"status": "success", "redirect": url_for("dashboard")})
 
 
-def process_instance_background(
-    project_name, cde_name, target_key, initial_raw_data=None
-):
+def process_instance_background(project_name, cde_name, target_key, initial_raw_data=None):
     try:
-        cde_path = os.path.join(
-            get_project_dir(project_name, "uploads"), "reporting_layers.xlsx"
-        )
+        cde_path = os.path.join(get_project_dir(project_name, 'uploads'), "reporting_layers.xlsx")
 
         with file_lock:
             xls = pd.ExcelFile(cde_path, engine="openpyxl")
@@ -817,80 +813,48 @@ def process_instance_background(
         target_apps = []
         for _, row in df[df["CDE name"] == cde_name].iterrows():
             target_str = str(row.get("Target App Codes", ""))
-            if target_str.lower() != "nan":
-                target_apps.extend(
-                    [t.strip().upper() for t in target_str.split(",") if t.strip()]
-                )
+            if target_str.lower() != "nan": target_apps.extend([t.strip().upper() for t in target_str.split(",") if t.strip()])
 
         with file_lock:
             state = load_state(project_name)
-            stack = state.get(target_key, {}).get("stack", [])
+            state_data = state.get(target_key, {})
+            stack = state_data.get("stack", [])
+            pending_branches = state_data.get("pendingBranches", [])
+            completed_paths = state_data.get("completedPaths", [])
 
         if not stack:
             _, app_code, table, col = target_key.split("|")
-            stack = [
-                {
-                    "app": app_code,
-                    "original_table": table,
-                    "original_col": col,
-                    "reconciled_table": table,
-                    "reconciled_col": col,
-                    "raw_data": initial_raw_data or {},
-                }
-            ]
+            stack = [{"app": app_code, "original_table": table, "original_col": col, "reconciled_table": table, "reconciled_col": col, "raw_data": initial_raw_data or {}}]
 
-        update_state_for_key(
-            project_name,
-            target_key,
-            {"status": "PROCESSING", "stack": stack, "timestamp": str(datetime.now())},
-        )
+        update_state_for_key(project_name, target_key, {"status": "PROCESSING", "stack": stack, "pendingBranches": pending_branches, "completedPaths": completed_paths, "timestamp": str(datetime.now())})
 
-        stacks_to_process = [stack]
-        completed_paths = []
+        # Load queue with the active stack, PLUS any pending branches from previous pauses
+        stacks_to_process = [stack] + pending_branches
 
         while stacks_to_process:
             current_stack = stacks_to_process.pop(0)
             current_node = current_stack[-1]
 
-            candidates = execute_search_api_logic(
-                project_name,
-                cde_name,
-                current_node["app"],
-                current_node.get(
-                    "original_table", current_node.get("reconciled_table")
-                ),
-                current_node.get("original_col", current_node.get("reconciled_col")),
-                target_apps,
-            )
+            candidates = execute_search_api_logic(project_name, cde_name, current_node["app"], current_node.get("original_table", current_node.get("reconciled_table")), current_node.get("original_col", current_node.get("reconciled_col")), target_apps)
 
             if len(candidates) == 0:
                 reason = "End of Discovered Lineage (Dead End). Please confirm or Manually Link."
-                update_state_for_key(
-                    project_name,
-                    target_key,
-                    {
-                        "status": "NEEDS_REVIEW",
-                        "stack": current_stack,
-                        "reason": reason,
-                        "timestamp": str(datetime.now()),
-                    },
-                )
+                update_state_for_key(project_name, target_key, {
+                    "status": "NEEDS_REVIEW", "stack": current_stack, 
+                    "pendingBranches": stacks_to_process, "completedPaths": completed_paths, # FIXED: Preserve queue!
+                    "reason": reason, "timestamp": str(datetime.now())
+                })
                 return
 
             best_cand = candidates[0]
 
             if best_cand["match_type"] != "Exact Match" or len(candidates) > 1:
                 reason = f"{best_cand['match_type']} or Multiple Files detected. Human review required to confirm."
-                update_state_for_key(
-                    project_name,
-                    target_key,
-                    {
-                        "status": "NEEDS_REVIEW",
-                        "stack": current_stack,
-                        "reason": reason,
-                        "timestamp": str(datetime.now()),
-                    },
-                )
+                update_state_for_key(project_name, target_key, {
+                    "status": "NEEDS_REVIEW", "stack": current_stack, 
+                    "pendingBranches": stacks_to_process, "completedPaths": completed_paths, # FIXED: Preserve queue!
+                    "reason": reason, "timestamp": str(datetime.now())
+                })
                 return
 
             track_file_usage(project_name, best_cand.get("file_path"))
@@ -898,57 +862,28 @@ def process_instance_background(
             for src in best_cand["raw_rows"]:
                 new_stack = copy.deepcopy(current_stack)
                 new_stack[-1]["reconciled_table"] = best_cand["found_table"]
-                new_stack[-1]["reconciled_col"] = (
-                    src["found_col"]
-                    if src.get("found_col")
-                    else current_node.get("original_col", "")
-                )
+                new_stack[-1]["reconciled_col"] = src["found_col"] if src.get("found_col") else current_node.get("original_col", "")
                 new_stack[-1]["raw_data"] = src["raw_row_data"]
 
                 next_app = src["next_app"]
-                new_node = {
-                    "app": next_app,
-                    "original_table": src["next_table"],
-                    "original_col": src["next_col"],
-                    "reconciled_table": src["next_table"],
-                    "reconciled_col": src["next_col"],
-                    "raw_data": src["raw_row_data"],
-                }
+                new_node = {"app": next_app, "original_table": src["next_table"], "original_col": src["next_col"], "reconciled_table": src["next_table"], "reconciled_col": src["next_col"], "raw_data": src["raw_row_data"]}
                 new_stack.append(new_node)
 
                 if next_app in target_apps:
                     new_stack[-1]["notes"] = "Target Reached (Auto-Resolved)"
-                    completed_paths.append((new_stack, False))
+                    completed_paths.append({"stack": new_stack, "is_dead_end": False})
                 else:
                     stacks_to_process.append(new_stack)
 
-        for path, is_dead_end in completed_paths:
-            write_lineage_to_files(project_name, cde_name, path, is_dead_end)
+        for path_dict in completed_paths:
+            write_lineage_to_files(project_name, cde_name, path_dict["stack"], path_dict["is_dead_end"])
 
-        update_state_for_key(
-            project_name,
-            target_key,
-            {
-                "status": "RESOLVED",
-                "stack": current_stack,
-                "timestamp": str(datetime.now()),
-            },
-        )
+        update_state_for_key(project_name, target_key, {"status": "RESOLVED", "stack": current_stack, "timestamp": str(datetime.now())})
 
     except Exception as e:
         error_msg = f"System Error: {str(e)}"
         print(f"CRASH in background task for {target_key}: {traceback.format_exc()}")
-        update_state_for_key(
-            project_name,
-            target_key,
-            {
-                "status": "NEEDS_REVIEW",
-                "stack": stack,
-                "reason": error_msg,
-                "timestamp": str(datetime.now()),
-            },
-        )
-
+        update_state_for_key(project_name, target_key, {"status": "NEEDS_REVIEW", "stack": stack, "reason": error_msg, "timestamp": str(datetime.now())})
 
 @app.route("/api/auto_resolve/start", methods=["POST"])
 def start_auto_resolve():
@@ -1013,19 +948,23 @@ def start_single_auto_resolve():
 
 @app.route("/api/auto_resolve/resume", methods=["POST"])
 def resume_auto_resolve():
-    project = session["active_project"]
+    project = session['active_project']
     data = request.json
     cde_name, stack = data["cde_name"], data["stack"]
+    pending = data.get("pendingBranches", [])
+    completed = data.get("completedPaths", [])
+    
     target_key = f"{cde_name}|{stack[0]['app']}|{stack[0]['original_table']}|{stack[0]['original_col']}"
 
     if len(stack) > 1 and "file" in stack[-1].get("raw_data", {}):
         track_file_usage(project, stack[-1]["raw_data"]["file"])
 
-    update_state_for_key(
-        project,
-        target_key,
-        {"status": "PROCESSING", "stack": stack, "timestamp": str(datetime.now())},
-    )
+    update_state_for_key(project, target_key, {
+        "status": "PROCESSING", "stack": stack, 
+        "pendingBranches": pending, "completedPaths": completed,
+        "timestamp": str(datetime.now())
+    })
+    
     executor.submit(process_instance_background, project, cde_name, target_key)
     return jsonify({"status": "Resumed in background"})
 

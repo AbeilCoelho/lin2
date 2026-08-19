@@ -214,8 +214,14 @@
             snapshotState() { return JSON.stringify({ stack: this.stack, pendingBranches: this.pendingBranches, completedPaths: this.completedPaths, currentNode: this.currentNode }); },
 
             initTrace() {
+                // FIXED: Read ALL data queues from the backend template renderer
                 let resumeStackStr = '{{ resume_stack | safe }}';
+                let resumePendingStr = '{{ resume_pending | safe }}';
+                let resumeCompletedStr = '{{ resume_completed | safe }}';
+                
                 let preloadedStack = JSON.parse(resumeStackStr || "[]");
+                this.pendingBranches = JSON.parse(resumePendingStr || "[]");
+                this.completedPaths = JSON.parse(resumeCompletedStr || "[]");
                 
                 if (preloadedStack.length > 0) {
                     this.stack = preloadedStack;
@@ -269,9 +275,15 @@
                 this.stack.push({ app: first_src.next_app, original_table: first_src.next_table, original_col: first_src.next_col, raw_data: first_src.raw_row_data, notes: "Auto-Resolve Resumed" });
 
                 try {
+                    // FIXED: Pass queues to background worker so it doesn't forget other branches!
                     await fetch('/api/auto_resolve/resume', {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ cde_name: this.cde_name, stack: this.stack })
+                        body: JSON.stringify({ 
+                            cde_name: this.cde_name, 
+                            stack: this.stack,
+                            pendingBranches: this.pendingBranches,
+                            completedPaths: this.completedPaths 
+                        })
                     });
                     window.location.href = '/dashboard';
                 } catch(e) { alert(e); this.loading = false; }
@@ -353,12 +365,15 @@
             async saveMidway() {
                 this.loading = true;
                 try {
-                    let currentStack = [...this.stack];
-                    currentStack.push(this.currentNode); // Capture the exact node we are looking at right now
-                    
+                    // FIXED: Pass the ENTIRE context to the backend without mutating this.stack
                     await fetch('/api/save_midway', {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ cde_name: this.cde_name, stack: currentStack })
+                        body: JSON.stringify({ 
+                            cde_name: this.cde_name, 
+                            stack: this.stack,
+                            pendingBranches: this.pendingBranches,
+                            completedPaths: this.completedPaths
+                        })
                     });
                     window.location.href = '/dashboard';
                 } catch(e) { alert("Error saving state: " + e.message); this.loading = false; }
