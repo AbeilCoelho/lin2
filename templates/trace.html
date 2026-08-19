@@ -29,9 +29,14 @@
                 <span x-show="resumeMode" class="ml-2 bg-yellow-100 text-yellow-800 text-[10px] font-bold px-2 py-0.5 rounded shadow-sm border border-yellow-200">EDIT / REVIEW MODE</span>
             </div>
             
-            <button x-show="stack.length > 1 || undoHistory.length > 1" @click="undo()" :disabled="loading" :class="loading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-red-200 hover:text-red-700'" class="bg-gray-200 text-gray-700 font-bold py-1 px-3 rounded text-xs transition duration-200">
-                ↶ Undo Step (<span x-text="undoHistory.length - 1"></span> hops)
-            </button>
+            <div class="flex gap-2">
+                <button x-show="stack.length > 1 || undoHistory.length > 1" @click="undo()" :disabled="loading" :class="loading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-red-200 hover:text-red-700'" class="bg-gray-200 text-gray-700 font-bold py-1 px-3 rounded text-xs transition duration-200">
+                    ↶ Undo Step (<span x-text="undoHistory.length - 1"></span> hops)
+                </button>
+                <button @click="saveMidway()" class="bg-blue-100 text-rbcBlue font-bold py-1 px-3 rounded text-xs hover:bg-blue-200 shadow-sm border border-blue-200 transition duration-200">
+                    💾 Save & Exit
+                </button>
+            </div>
         </div>
         
         <div class="space-y-1.5 max-h-32 overflow-y-auto mt-2">
@@ -343,6 +348,20 @@
                     this.stack = prev.stack; this.pendingBranches = prev.pendingBranches; this.completedPaths = prev.completedPaths; this.currentNode = prev.currentNode;
                     this.searchCandidates();
                 }
+            },
+            
+            async saveMidway() {
+                this.loading = true;
+                try {
+                    let currentStack = [...this.stack];
+                    currentStack.push(this.currentNode); // Capture the exact node we are looking at right now
+                    
+                    await fetch('/api/save_midway', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ cde_name: this.cde_name, stack: currentStack })
+                    });
+                    window.location.href = '/dashboard';
+                } catch(e) { alert("Error saving state: " + e.message); this.loading = false; }
             },
 
             async finishLineage(isDeadEnd) {

@@ -7,16 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        rbcBlue: '#005DAA',     /* RBC Royal Blue */
-                        rbcBlueDark: '#003F7A', /* Darker Blue for hover states */
-                        rbcYellow: '#FFD200',   /* RBC Yellow */
-                        rbcLight: '#F3F4F6',    /* Light Gray Background */
-                    }
-                }
-            }
+            theme: { extend: { colors: { rbcBlue: '#005DAA', rbcBlueDark: '#003F7A', rbcYellow: '#FFD200', rbcLight: '#F3F4F6', } } }
         }
     </script>
 </head>
@@ -30,21 +21,27 @@
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
                     </svg>
                     <span class="text-white font-bold text-xl tracking-wide">Data Lineage Manager</span>
+                    
+                    <!-- NEW: Active Project Context -->
+                    {% if session.get('active_project') %}
+                        <span class="ml-4 px-2 py-1 bg-blue-800 text-blue-200 text-xs font-bold uppercase rounded border border-blue-700">Project: {{ session.get('active_project') }}</span>
+                    {% endif %}
                 </div>
                 <div>
-                    <a href="/" class="text-white hover:text-rbcYellow px-3 py-2 rounded-md text-sm font-medium transition duration-150">New Project</a>
-                    <a href="/dashboard" class="text-white hover:text-rbcYellow px-3 py-2 rounded-md text-sm font-medium transition duration-150">Dashboard</a>
+                    <a href="/" class="text-white hover:text-rbcYellow px-3 py-2 rounded-md text-sm font-medium transition duration-150">Project Hub</a>
+                    {% if session.get('active_project') %}
+                        <a href="/dashboard" class="text-white hover:text-rbcYellow px-3 py-2 rounded-md text-sm font-medium transition duration-150">Dashboard</a>
+                        <a href="/tools" class="text-white hover:text-rbcYellow px-3 py-2 rounded-md text-sm font-medium transition duration-150">Tools</a>
+                    {% endif %}
                 </div>
             </div>
         </div>
     </nav>
 
-    <!-- Main Content -->
     <main class="flex-grow max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
         {% block content %}{% endblock %}
     </main>
 
-    <!-- Footer -->
     <footer class="bg-white border-t border-gray-200 py-4 text-center text-sm text-gray-500">
         &copy; 2024 Data Lineage Consolidation Engine
     </footer>

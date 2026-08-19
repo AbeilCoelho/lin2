@@ -6,9 +6,9 @@
         <h1 class="text-2xl font-bold text-gray-900">Report Dashboard</h1>
         <p class="text-gray-600 mt-1">Track lineage progress and manage CDE instances.</p>
     </div>
-    <button id="resolveBtn"  onclick="startAutoResolve()" 
+    <button id="resolveBtn"  onclick="startAutoResolve()"
             {% if metrics.auto_resolvable == 0 %} disabled {% endif %}
-            class="font-bold py-2 px-4 rounded shadow flex items-center transition 
+            class="font-bold py-2 px-4 rounded shadow flex items-center transition
                    {% if metrics.auto_resolvable == 0 %} bg-gray-300 text-gray-500 cursor-not-allowed {% else %} bg-rbcBlue text-white hover:bg-rbcBlueDark {% endif %}">
         <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
         Run Bulk Auto-Resolve
@@ -43,7 +43,7 @@
         <thead class="bg-gray-50">
             <tr>
                 <th class="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">CDE Name</th>
-                <th class="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Current App / Table</th>
+                <th class="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Current App / Table / Column</th>
                 <th class="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Status</th>
                 <th class="px-6 py-3 text-right text-xs font-bold text-gray-500 uppercase">Action</th>
             </tr>
@@ -58,6 +58,7 @@
                     <td class="px-6 py-4">
                         <div class="text-sm font-mono font-bold text-gray-700">{{ instance.app }}</div>
                         <div class="text-xs text-gray-500 max-w-xs truncate">{{ instance.table }}</div>
+                        <div class="text-xs text-gray-500 max-w-xs truncate">{{ instance.column }}</div>
                     </td>
                     <td class="px-6 py-4">
                         {% if instance.status == 'Completed' %}
@@ -79,7 +80,7 @@
                                 <a href="/view_lineage/{{ cde.name|urlencode }}" class="text-green-600 border border-green-600 px-3 py-1 rounded hover:bg-green-50 font-bold transition">View Flow</a>
                             </div>
                         {% elif instance.status == 'Needs Review' %}
-                            <a href="/trace/{{ cde.name|urlencode }}/{{ instance.app|urlencode }}/{{ instance.table|urlencode }}/{{ instance.column|urlencode }}?targets={{ cde.target_apps|join(',')|urlencode }}&resume_auto=true" 
+                            <a href="/trace/{{ cde.name|urlencode }}/{{ instance.app|urlencode }}/{{ instance.table|urlencode }}/{{ instance.column|urlencode }}?targets={{ cde.target_apps|join(',')|urlencode }}&resume_auto=true"
                             class="bg-red-500 text-white font-bold px-4 py-1.5 rounded shadow hover:bg-red-600 block w-fit ml-auto transition">
                             Resolve Issue &rarr;
                             </a>
@@ -87,11 +88,11 @@
                             <span class="text-blue-500 italic block w-fit ml-auto animate-pulse">Running...</span>
                         {% else %}
                             <div class="flex justify-end gap-2">
-                                <button onclick="autoResolveSingle('{{ cde.name|escape }}', '{{ instance.app|escape }}', '{{ instance.table|escape }}', '{{ instance.column|escape }}')" 
+                                <button onclick="autoResolveSingle('{{ cde.name|escape }}', '{{ instance.app|escape }}', '{{ instance.table|escape }}', '{{ instance.column|escape }}')"
                                         class="bg-blue-100 text-rbcBlue border border-blue-200 px-3 py-1 rounded hover:bg-blue-200 font-bold transition flex items-center">
                                     ⚡ Auto
                                 </button>
-                                
+
                                 <a href="/trace/{{ cde.name|urlencode }}/{{ instance.app|urlencode }}/{{ instance.table|urlencode }}/{{ instance.column|urlencode }}?targets={{ cde.target_apps|join(',')|urlencode }}" class="text-rbcBlue border border-rbcBlue px-3 py-1 rounded hover:bg-blue-50 font-bold transition">Manual Trace &rarr;</a>
                             </div>
                         {% endif %}
@@ -125,10 +126,10 @@
             const response = await fetch('/dashboard');
             const htmlText = await response.text();
             const doc = new DOMParser().parseFromString(htmlText, 'text/html');
-            
+
             const newTable = doc.getElementById('table-body');
             if (newTable) document.getElementById('table-body').innerHTML = newTable.innerHTML;
-            
+
             const processingNode = doc.getElementById('metric-processing');
             if (processingNode && parseInt(processingNode.innerText) === 0) stopPolling();
         } catch (e) { console.error("Polling error:", e); }

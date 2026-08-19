@@ -1,0 +1,100 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Workspace Tools</h1>
+    <p class="text-gray-600 mt-1">Run external scripts or view consolidated flows for the active project.</p>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+    
+    <!-- LEFT: Python Script Tools -->
+    <div class="space-y-4">
+        
+        <!-- Completeness Check -->
+        <div x-data="{ open: false }" class="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+            <button @click="open = !open" class="w-full bg-gray-50 px-6 py-4 flex justify-between items-center hover:bg-gray-100 transition focus:outline-none">
+                <div class="flex items-center text-gray-800 font-bold">
+                    <span class="text-xl mr-3">✔️</span> Completeness Check
+                </div>
+                <svg :class="{'rotate-180': open}" class="w-5 h-5 text-gray-500 transform transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
+            </button>
+            <div x-show="open" x-collapse class="px-6 py-4 border-t border-gray-200">
+                <p class="text-sm text-gray-600 mb-4">Run a secondary Python script to validate lineage integrity against metadata rules.</p>
+                <form onsubmit="event.preventDefault(); alert('Placeholder for Completeness Script!');">
+                    <label class="block text-xs font-bold text-gray-700 uppercase mb-1">Source File to check</label>
+                    <input type="file" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:bg-blue-50 file:text-rbcBlue hover:file:bg-blue-100 cursor-pointer border border-gray-300 rounded-md p-1 mb-4">
+                    <button class="bg-rbcBlue text-white font-bold py-2 px-4 rounded text-sm hover:bg-rbcBlueDark w-full transition">Run Completeness Check</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Concatenate Lineage -->
+        <div x-data="{ open: false }" class="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+            <button @click="open = !open" class="w-full bg-gray-50 px-6 py-4 flex justify-between items-center hover:bg-gray-100 transition focus:outline-none">
+                <div class="flex items-center text-gray-800 font-bold">
+                    <span class="text-xl mr-3">🔗</span> Concatenate Lineage Files
+                </div>
+                <svg :class="{'rotate-180': open}" class="w-5 h-5 text-gray-500 transform transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
+            </button>
+            <div x-show="open" x-collapse class="px-6 py-4 border-t border-gray-200">
+                <p class="text-sm text-gray-600 mb-4">Merge multiple partial lineage files into a single unified tracking document.</p>
+                <form onsubmit="event.preventDefault(); alert('Placeholder for Concatenate Script!');">
+                    <label class="block text-xs font-bold text-gray-700 uppercase mb-1">Files to Merge (Select multiple)</label>
+                    <input type="file" multiple class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:bg-blue-50 file:text-rbcBlue hover:file:bg-blue-100 cursor-pointer border border-gray-300 rounded-md p-1 mb-4">
+                    <button class="bg-rbcBlue text-white font-bold py-2 px-4 rounded text-sm hover:bg-rbcBlueDark w-full transition">Merge Files</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Conversion Tool -->
+        <div x-data="{ open: false }" class="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+            <button @click="open = !open" class="w-full bg-gray-50 px-6 py-4 flex justify-between items-center hover:bg-gray-100 transition focus:outline-none">
+                <div class="flex items-center text-gray-800 font-bold">
+                    <span class="text-xl mr-3">🔄</span> File Version Conversion
+                </div>
+                <svg :class="{'rotate-180': open}" class="w-5 h-5 text-gray-500 transform transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
+            </button>
+            <div x-show="open" x-collapse class="px-6 py-4 border-t border-gray-200">
+                <p class="text-sm text-gray-600 mb-4">Upgrade an older V1 schema lineage file to the current V2 format.</p>
+                <form onsubmit="event.preventDefault(); alert('Placeholder for Conversion Script!');">
+                    <label class="block text-xs font-bold text-gray-700 uppercase mb-1">Old Version File</label>
+                    <input type="file" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:bg-blue-50 file:text-rbcBlue hover:file:bg-blue-100 cursor-pointer border border-gray-300 rounded-md p-1 mb-4">
+                    <button class="bg-rbcBlue text-white font-bold py-2 px-4 rounded text-sm hover:bg-rbcBlueDark w-full transition">Convert Schema</button>
+                </form>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- RIGHT: Output Viewer -->
+    <div class="bg-white rounded-lg shadow-lg overflow-hidden border border-gray-200 h-fit">
+        <div class="bg-blue-800 px-6 py-4 border-b border-gray-700">
+            <h2 class="text-xl font-bold text-white">Consolidated Lineage Outputs</h2>
+            <p class="text-blue-200 text-sm mt-1">View flows for previously processed files in this project.</p>
+        </div>
+        <div class="p-4">
+            <div class="space-y-2">
+                {% for f in files %}
+                    <div class="border border-gray-200 rounded p-3 flex justify-between items-center hover:bg-gray-50 transition">
+                        <div>
+                            <p class="font-mono text-sm font-bold text-gray-800 break-all">{{ f }}</p>
+                            <p class="text-xs text-gray-500 mt-1">Found in /outputs directory</p>
+                        </div>
+                        <a href="/view_lineage/{{ f|replace('_Consolidation_Workbook.xlsx', '')|urlencode }}" class="bg-green-100 text-green-700 hover:bg-green-200 border border-green-300 font-bold py-1.5 px-3 rounded shadow-sm text-xs transition flex-shrink-0 ml-4">
+                            View Flow
+                        </a>
+                    </div>
+                {% else %}
+                    <div class="text-center py-8 text-gray-500 text-sm italic border-2 border-dashed border-gray-200 rounded">
+                        No consolidated outputs found in this workspace yet.
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+{% endblock %}
