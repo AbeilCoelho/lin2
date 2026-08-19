@@ -47,19 +47,34 @@ def get_state_file(project_name):
 
 
 def make_json_serializable(obj):
-    if pd.isna(obj):
-        return None
+    """Convert pandas/numpy types to JSON-serializable formats"""
+    # 1. Unpack dictionaries first
     if isinstance(obj, dict):
-        return {k: make_json_serializable(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
+        return {str(k): make_json_serializable(v) for k, v in obj.items()}
+    
+    # 2. Unpack lists, tuples, and numpy arrays first
+    elif isinstance(obj, (list, tuple, set)):
         return [make_json_serializable(item) for item in obj]
-    elif hasattr(obj, "isoformat"):
+    
+    # 3. Now that we are down to individual values, it's safe to check for NaN
+    try:
+        if pd.isna(obj):
+            return None
+    except ValueError:
+        pass # Catch edge cases where pd.isna fails on weird types
+    
+    # 4. Handle Dates
+    if hasattr(obj, "isoformat"):
         try:
             return obj.isoformat()
-        except:
+        except (ValueError, TypeError):
             return None
+            
+    # 5. Handle standard safe types
     elif isinstance(obj, (int, float, str, bool, type(None))):
         return obj
+        
+    # 6. Fallback for anything else
     else:
         return str(obj)
 
