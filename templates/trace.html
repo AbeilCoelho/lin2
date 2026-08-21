@@ -176,7 +176,7 @@
         </div>
     </div>
 
-    <!-- NEW: Circular Loop Warning Banner -->
+    <!-- Circular Loop Warning Banner -->
     <div x-show="hasCircularReference()" style="display: none;" class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4 shadow-sm flex items-center">
         <svg class="w-6 h-6 mr-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
         <div>
@@ -270,7 +270,7 @@
                                         <label class="flex items-center p-2 border border-yellow-200 rounded cursor-pointer bg-yellow-100 shadow-sm">
                                             <input type="radio" value="concat" x-model="cand.stitchChoice" class="w-4 h-4">
                                             <span class="ml-3 text-xs"><span class="font-bold text-gray-700">Concatenate:</span>
-                                            <span class="font-mono text-gray-900" x-text="(cand.raw_rows[0].searched_table === cand.found_table ? cand.found_table : cand.raw_rows[0].searched_table + '/' + cand.found_table) + '.' + (cand.raw_rows[0].searched_col === cand.found_col ? cand.found_col : cand.raw_rows[0].searched_col + '/' + cand.found_col)"></span>
+                                            <span class="font-mono text-gray-900" x-text="(cand.raw_rows[0].searched_table.toUpperCase() === cand.found_table.toUpperCase() ? cand.found_table : cand.raw_rows[0].searched_table + '/' + cand.found_table) + '.' + (cand.raw_rows[0].searched_col.toUpperCase() === cand.found_col.toUpperCase() ? cand.found_col : cand.raw_rows[0].searched_col + '/' + cand.found_col)"></span>
                                             </span>
                                         </label>
                                     </div>
@@ -343,7 +343,6 @@
 
             isTargetApp(appCode) { return this.targetApps.includes((appCode || "").toUpperCase()); },
 
-            // NEW: Scans the active stack looking for duplicate App/Table/Col fingerprints
             hasCircularReference() {
                 const keys = this.stack.map(n => `${n.app}|${n.original_table}|${n.original_col}`);
                 return new Set(keys).size !== keys.length;
@@ -372,8 +371,8 @@
                 if (cand.stitchChoice === 'found') return { table: ft, col: fc };
 
                 return {
-                    table: (st === ft) ? ft : `${st}/${ft}`,
-                    col: (sc === fc) ? fc : `${sc}/${fc}`
+                    table: (st.toUpperCase() === ft.toUpperCase()) ? ft : `${st}/${ft}`,
+                    col: (sc.toUpperCase() === fc.toUpperCase()) ? fc : `${sc}/${fc}`
                 };
             },
 
@@ -386,7 +385,15 @@
                 if (cand.raw_rows && cand.raw_rows.length > 0) this.stack[this.stack.length - 1].raw_data = cand.raw_rows[0].raw_row_data;
 
                 let first_src = cand.raw_rows[0];
-                this.stack.push({ app: first_src.next_app, original_table: first_src.next_table, original_col: first_src.next_col, raw_data: first_src.raw_row_data, notes: "Auto-Resolve Resumed" });
+                
+                // 🛠 FIX: New Node ONLY inherits the App Name from the edge!
+                this.stack.push({ 
+                    app: first_src.next_app, 
+                    original_table: first_src.next_table, 
+                    original_col: first_src.next_col, 
+                    raw_data: { "Current app name": first_src.raw_row_data["Source app name"] || "" }, 
+                    notes: "Auto-Resolve Resumed" 
+                });
 
                 try {
                     await fetch('/api/auto_resolve/resume', {
@@ -419,13 +426,26 @@
                 if (raw_sources.length > 1) {
                     for (let i = 1; i < raw_sources.length; i++) {
                         let branchStack = JSON.parse(JSON.stringify(this.stack));
-                        branchStack.push({ app: raw_sources[i].next_app, original_table: raw_sources[i].next_table, original_col: raw_sources[i].next_col, raw_data: raw_sources[i].raw_row_data });
+                        branchStack.push({ 
+                            app: raw_sources[i].next_app, 
+                            original_table: raw_sources[i].next_table, 
+                            original_col: raw_sources[i].next_col, 
+                            raw_data: { "Current app name": raw_sources[i].raw_row_data["Source app name"] || "" } 
+                        });
                         this.pendingBranches.push(branchStack);
                     }
                 }
 
                 let first_src = raw_sources[0];
-                let newNode = { app: first_src.next_app, original_table: first_src.next_table, original_col: first_src.next_col, raw_data: first_src.raw_row_data, notes: "" };
+                
+                // 🛠 FIX: New Node ONLY inherits the App Name from the edge!
+                let newNode = { 
+                    app: first_src.next_app, 
+                    original_table: first_src.next_table, 
+                    original_col: first_src.next_col, 
+                    raw_data: { "Current app name": first_src.raw_row_data["Source app name"] || "" }, 
+                    notes: "" 
+                };
 
                 this.currentNode = { ...newNode };
                 this.stack.push(newNode);
@@ -442,8 +462,8 @@
                 let recTable = ft, recCol = fc;
                 if (this.manualStitchChoice === 'current') { recTable = st; recCol = sc; }
                 else if (this.manualStitchChoice === 'concat') {
-                    recTable = (st === ft) ? ft : `${st}/${ft}`;
-                    recCol = (sc === fc) ? fc : `${sc}/${fc}`;
+                    recTable = (st.toUpperCase() === ft.toUpperCase()) ? ft : `${st}/${ft}`;
+                    recCol = (sc.toUpperCase() === fc.toUpperCase()) ? fc : `${sc}/${fc}`;
                 }
 
                 this.stack[this.stack.length - 1].reconciled_table = recTable;
@@ -475,9 +495,8 @@
                 }
             },
 
-            // NEW: Truncate current stack and jump backward to a clicked Hop
             jumpToHop(index) {
-                if (index === this.stack.length - 1) return; // Do nothing if already on the current active node
+                if (index === this.stack.length - 1) return;
                 this.undoHistory.push(this.snapshotState());
                 
                 this.stack = this.stack.slice(0, index + 1);

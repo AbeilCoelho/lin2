@@ -49,14 +49,12 @@ GLOBAL_DF_CACHE = {}
 cache_lock = threading.RLock()
 
 def clear_project_cache(project_name):
-    """Clears RAM cache when a user changes projects or uploads new files."""
     with cache_lock:
         keys_to_delete = [k for k in GLOBAL_DF_CACHE.keys() if k.startswith(project_name)]
         for k in keys_to_delete:
             del GLOBAL_DF_CACHE[k]
 
 def get_cached_dataframe(project_name, file_name, sheet_name=0):
-    """Loads an Excel file into RAM once, and pre-computes search columns for hyper-fast querying."""
     cache_key = f"{project_name}_{file_name}_{sheet_name}"
     
     with cache_lock:
@@ -356,14 +354,17 @@ def search_dataframe(df, app_code, table, col):
 
     choices_list = [f"{r['clean_table']} | {r['clean_col']}" for _, r in app_filtered[["clean_table", "clean_col"]].drop_duplicates().iterrows()]
     
+    # --- BOOSTED SEARCH LIMITS FOR 'PARTY MODE' ---
+    FUZZY_LIMIT = 50
+    
     if USE_RAPIDFUZZ:
-        close_matches = process.extract(f"{table} | {col}", choices_list, limit=3, score_cutoff=60)
+        close_matches = process.extract(f"{table} | {col}", choices_list, limit=FUZZY_LIMIT, score_cutoff=60)
         if close_matches:
             parts = close_matches[0][0].split(" | ")
             fuzzy = df[(df["clean_app"] == app_code) & (df["clean_table"] == parts[0]) & (df["clean_col"] == (parts[1] if len(parts) > 1 else ""))]
             if not fuzzy.empty: return fuzzy, "Fuzzy Match"
     else:
-        close_matches = difflib.get_close_matches(f"{table} | {col}", choices_list, n=15, cutoff=0.3)
+        close_matches = difflib.get_close_matches(f"{table} | {col}", choices_list, n=FUZZY_LIMIT, cutoff=0.3)
         if close_matches:
             parts = close_matches[0].split(" | ")
             fuzzy = df[(df["clean_app"] == app_code) & (df["clean_table"] == parts[0]) & (df["clean_col"] == (parts[1] if len(parts) > 1 else ""))]
@@ -440,19 +441,24 @@ def write_lineage_to_files(project_name, cde_name, stack, is_dead_end):
 
         for i in range(len(stack)):
             curr = stack[i]
+            
+            # 🛠 FIX: Extract node names from the edge row that brought us here!
+            data_row = curr.get("raw_data", {}).copy()
+            c_name = str(data_row.get("Current app name", "")).strip()
+            
             if i < len(stack) - 1:
                 next_node = stack[i + 1]
-                s_app, s_table, s_col = next_node["app"], next_node.get("reconciled_table", next_node["original_table"]), next_node.get("reconciled_col", next_node["original_col"])
-            else: s_app, s_table, s_col = "", "", ""
+                s_app = next_node["app"]
+                s_table = next_node.get("reconciled_table", next_node["original_table"])
+                s_col = next_node.get("reconciled_col", next_node["original_col"])
+                s_name = str(data_row.get("Source app name", "")).strip() # Fixed name mixup!
+            else: 
+                s_app, s_table, s_col, s_name = "", "", "", ""
 
             dest = stack[i - 1]["app"] if i > 0 else ""
             lineage_key = f"{curr['app']}|{curr.get('reconciled_table', curr['original_table'])}|{curr.get('reconciled_col', curr['original_col'])}->{s_app}|{s_table}|{s_col}"
             if lineage_key in seen_lineages: continue
             seen_lineages.add(lineage_key)
-
-            data_row = curr.get("raw_data", {}).copy()
-            c_name = str(data_row.get("Current app name", "")).strip()
-            s_name = str(next_node.get("raw_data", {}).get("Source app name", "")).strip() if i < len(stack) - 1 else ""
 
             data_row.update({
                 "Label": f"↓ {curr['app']}" if i == 0 else f"↑ {dest}   ↓ {curr['app']}",
@@ -515,8 +521,11 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
         stacks_to_process = [stack] + pending_branches
         finished_paths = completed_paths
         
-        MAX_DEPTH = 30
-        MAX_EVALS = 600
+        # 🚀 EXPANDED BOUNDARIES FOR THE PARTY
+        MAX_DEPTH = 60
+        MAX_EVALS = 100000
+        FUZZY_BRANCH_LIMIT = 30
+        
         eval_count = 0
 
         while stacks_to_process and eval_count < MAX_EVALS:
@@ -555,7 +564,7 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
                 candidates_to_explore = exact_matches 
                 engine_log(project_name, cde_name, f"✅ Found {len(exact_matches)} Exact Matches. Pruning fuzzy options.")
             else:
-                candidates_to_explore = candidates[:3] 
+                candidates_to_explore = candidates[:FUZZY_BRANCH_LIMIT] 
                 engine_log(project_name, cde_name, f"⚠️ No exact match. Branching {len(candidates_to_explore)} best Fuzzy/Flexible paths.")
             
             for cand in candidates_to_explore:
@@ -564,15 +573,11 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
                 for src in cand["raw_rows"]:
                     new_stack = copy.deepcopy(current_stack)
                     
-                    # ==========================================
-                    # 🔧 SMART CONCATENATION FOR FUZZY MATCHES 
-                    # ==========================================
                     st = src.get("searched_table", current_node.get("original_table"))
                     sc = src.get("searched_col", current_node.get("original_col"))
                     ft = cand["found_table"]
                     fc = src.get("found_col", cand.get("found_col", current_node.get("original_col", "")))
                     
-                    # If it's a Fuzzy/Flexible match, automatically concatenate the searched and found strings.
                     if "Exact" not in cand["match_type"]:
                         rec_table = ft if str(st).strip().upper() == str(ft).strip().upper() else f"{st}/{ft}"
                         rec_col = fc if str(sc).strip().upper() == str(fc).strip().upper() else f"{sc}/{fc}"
@@ -582,17 +587,21 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
                     
                     new_stack[-1]["reconciled_table"] = rec_table
                     new_stack[-1]["reconciled_col"] = rec_col
+                    
+                    # 🛠 FIX: Only attach the row identifying the edge transition
                     new_stack[-1]["raw_data"] = src["raw_row_data"]
                     new_stack[-1]["cand_score"] = cand.get("score", 0)
 
                     next_app = src["next_app"]
+                    
+                    # 🛠 FIX: The new node only inherits its own "Current App Name" from the edge's Source App Name
                     new_node = {
                         "app": next_app, 
                         "original_table": src["next_table"], 
                         "original_col": src["next_col"], 
                         "reconciled_table": src["next_table"], 
                         "reconciled_col": src["next_col"], 
-                        "raw_data": src["raw_row_data"],
+                        "raw_data": { "Current app name": src["raw_row_data"].get("Source app name", "") },
                         "notes": "Target Reached (Intermediate)" if next_app in target_apps else ""
                     }
                     
