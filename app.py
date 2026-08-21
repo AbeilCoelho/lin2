@@ -20,7 +20,6 @@ import copy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-# --- RAPIDFUZZ FALLBACK ---
 try:
     from rapidfuzz import process
     USE_RAPIDFUZZ = True
@@ -43,48 +42,60 @@ executor = ThreadPoolExecutor(max_workers=8)
 file_lock = threading.RLock()
 
 # ==========================================
-# 🚀 HIGH-PERFORMANCE MEMORY CACHE
+# 🚀 ULTRA-FAST O(1) HASH MAP CACHE
 # ==========================================
 GLOBAL_DF_CACHE = {}
 cache_lock = threading.RLock()
 
+class CachedIndex:
+    def __init__(self, df):
+        self.exact_idx = {}
+        self.flex_idx = {}
+        self.app_choices = {}
+        
+        # Build O(1) Native Python Dictionaries for hyper-fast lookups
+        for _, row in df.iterrows():
+            r = row.to_dict()
+            app = str(r.get("Current app code", "")).strip().upper()
+            tbl = str(r.get("Current table/file name", "")).strip().upper()
+            col = str(r.get("Current column/field name", "")).strip().upper()
+            
+            ftbl = flexible_normalize(tbl)
+            fcol = flexible_normalize(col)
+            
+            # Exact Match Hash Map
+            ekey = (app, tbl, col)
+            if ekey not in self.exact_idx: self.exact_idx[ekey] = []
+            self.exact_idx[ekey].append(r)
+            
+            # Flexible Match Hash Map
+            fkey = (app, ftbl, fcol)
+            if fkey not in self.flex_idx: self.flex_idx[fkey] = []
+            self.flex_idx[fkey].append(r)
+            
+            # Choices for Fuzzy Searching
+            if app not in self.app_choices: self.app_choices[app] = set()
+            self.app_choices[app].add(f"{tbl} | {col}")
+
 def clear_project_cache(project_name):
     with cache_lock:
         keys_to_delete = [k for k in GLOBAL_DF_CACHE.keys() if k.startswith(project_name)]
-        for k in keys_to_delete:
-            del GLOBAL_DF_CACHE[k]
+        for k in keys_to_delete: del GLOBAL_DF_CACHE[k]
 
-def get_cached_dataframe(project_name, file_name, sheet_name=0):
+def get_cached_index(project_name, file_name, sheet_name=0):
     cache_key = f"{project_name}_{file_name}_{sheet_name}"
-    
     with cache_lock:
-        if cache_key in GLOBAL_DF_CACHE:
-            return GLOBAL_DF_CACHE[cache_key]
-            
+        if cache_key in GLOBAL_DF_CACHE: return GLOBAL_DF_CACHE[cache_key]
         file_path = os.path.join(get_project_dir(project_name, "uploads"), file_name)
-        if not os.path.exists(file_path):
-            return pd.DataFrame()
-            
-        with file_lock:
-            df = pd.read_excel(file_path, sheet_name=sheet_name, engine="openpyxl").fillna("")
+        if not os.path.exists(file_path): return None
         
-        if "Current app code" in df.columns:
-            for c in ["Current app code", "Current table/file name", "Current column/field name"]:
-                if c not in df.columns: df[c] = ""
-                df[c] = df[c].astype(str).str.strip().str.upper().replace("NAN", "")
-
-            df["clean_app"] = df["Current app code"]
-            df["clean_table"] = df["Current table/file name"]
-            df["clean_col"] = df["Current column/field name"]
-            
-            df["flex_table"] = df["clean_table"].apply(flexible_normalize)
-            df["flex_col"] = df["clean_col"].apply(flexible_normalize)
-            
-        GLOBAL_DF_CACHE[cache_key] = df
-        return df
+        with file_lock: df = pd.read_excel(file_path, sheet_name=sheet_name, engine="openpyxl").fillna("")
+        cached_obj = CachedIndex(df)
+        GLOBAL_DF_CACHE[cache_key] = cached_obj
+        return cached_obj
 
 
-# --- LOGGING & WEBSOCKET EMITTERS ---
+# --- LOGGING & STATE MANAGEMENT ---
 def engine_log(project_name, cde_name, message):
     timestamp = datetime.now().strftime("%H:%M:%S")
     log_str = f"[{timestamp}] [CDE: {cde_name}] {message}"
@@ -94,29 +105,23 @@ def engine_log(project_name, cde_name, message):
 def trigger_ui_refresh(project_name):
     socketio.emit('refresh_dashboard', {'project': project_name})
 
-
-# --- PROJECT WORKSPACE HELPERS ---
 def get_project_dir(project_name, subfolder=""):
     path = os.path.join(WORKSPACE_DIR, project_name, subfolder)
     os.makedirs(path, exist_ok=True)
     return path
 
-def get_state_file(project_name):
-    return os.path.join(get_project_dir(project_name, "uploads"), "auto_resolve_state.json")
+def get_state_file(project_name): return os.path.join(get_project_dir(project_name, "uploads"), "auto_resolve_state.json")
 
 def make_json_serializable(obj):
-    if isinstance(obj, dict):
-        return {str(k): make_json_serializable(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple, set)):
-        return [make_json_serializable(item) for item in obj]
+    if isinstance(obj, dict): return {str(k): make_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple, set)): return [make_json_serializable(item) for item in obj]
     try:
         if pd.isna(obj): return None
     except ValueError: pass
     if hasattr(obj, "isoformat"):
         try: return obj.isoformat()
         except: return None
-    elif isinstance(obj, (int, float, str, bool, type(None))):
-        return obj
+    elif isinstance(obj, (int, float, str, bool, type(None))): return obj
     return str(obj)
 
 def clean_raw_data_for_json(raw_dict):
@@ -132,17 +137,16 @@ def clean_raw_data_for_json(raw_dict):
 
 def load_state(project_name):
     with file_lock:
-        state_file = get_state_file(project_name)
-        if os.path.exists(state_file):
+        sf = get_state_file(project_name)
+        if os.path.exists(sf):
             try:
-                with open(state_file, "r") as f: return json.load(f)
+                with open(sf, "r") as f: return json.load(f)
             except: return {}
         return {}
 
 def save_state(project_name, state):
     with file_lock:
-        state = make_json_serializable(state)
-        with open(get_state_file(project_name), "w") as f: json.dump(state, f, indent=4)
+        with open(get_state_file(project_name), "w") as f: json.dump(make_json_serializable(state), f, indent=4)
 
 def update_state_for_key(project_name, key, data_dict):
     with file_lock:
@@ -166,8 +170,7 @@ def track_file_usage(project_name, file_path):
         save_state(project_name, state)
 
 def get_file_memory(project_name):
-    with file_lock:
-        return load_state(project_name).get("file_memory", {})
+    with file_lock: return load_state(project_name).get("file_memory", {})
 
 def flexible_normalize(val):
     val = str(val).strip().upper()
@@ -178,7 +181,6 @@ def flexible_normalize(val):
 
 def get_safe_filename(cde_name):
     return f"{re.sub(r'[^a-zA-Z0-9_\-]', '_', cde_name).strip()}_Consolidation_Workbook.xlsx"
-
 
 # --- ROUTES ---
 @app.route("/")
@@ -200,15 +202,10 @@ def set_project():
 def process_upload():
     project = session.get("active_project")
     if not project: return redirect(url_for("index"))
-
     upload_dir = get_project_dir(project, "uploads")
-    if "target_cde_file" in request.files and request.files["target_cde_file"].filename:
-        request.files["target_cde_file"].save(os.path.join(upload_dir, "reporting_layers.xlsx"))
-    if "primary_lineage_file" in request.files and request.files["primary_lineage_file"].filename:
-        request.files["primary_lineage_file"].save(os.path.join(upload_dir, "primary_lineage.xlsx"))
-    if "global_lineage_file" in request.files and request.files["global_lineage_file"].filename:
-        request.files["global_lineage_file"].save(os.path.join(upload_dir, "global_lineage.xlsx"))
-    
+    if "target_cde_file" in request.files and request.files["target_cde_file"].filename: request.files["target_cde_file"].save(os.path.join(upload_dir, "reporting_layers.xlsx"))
+    if "primary_lineage_file" in request.files and request.files["primary_lineage_file"].filename: request.files["primary_lineage_file"].save(os.path.join(upload_dir, "primary_lineage.xlsx"))
+    if "global_lineage_file" in request.files and request.files["global_lineage_file"].filename: request.files["global_lineage_file"].save(os.path.join(upload_dir, "global_lineage.xlsx"))
     clear_project_cache(project)
     return redirect(url_for("dashboard"))
 
@@ -216,7 +213,6 @@ def process_upload():
 def dashboard():
     project = session.get("active_project")
     if not project: return redirect(url_for("index"))
-
     cde_path = os.path.join(get_project_dir(project, "uploads"), "reporting_layers.xlsx")
     if not os.path.exists(cde_path): return redirect(url_for("index"))
 
@@ -226,7 +222,6 @@ def dashboard():
         df_done = pd.read_excel(xls, "Done").fillna("") if "Done" in xls.sheet_names else pd.DataFrame()
 
     done_keys = {f"{str(r.get('CDE name','')).strip()}|{str(r.get('Current app code','')).strip()}|{str(r.get('Current table/file name','')).strip()}|{str(r.get('Current column/field name','')).strip()}" for _, r in df_done.iterrows()}
-
     if "Target App Codes" not in df.columns: df["Target App Codes"] = ""
     state_db = load_state(project)
 
@@ -244,8 +239,7 @@ def dashboard():
             app_code, table, col = str(row.get("Current app code", "")).strip(), str(row.get("Current table/file name", "")).strip(), str(row.get("Current column/field name", "")).strip()
             key = f"{cde_name}|{app_code}|{table}|{col}"
 
-            if key in done_keys:
-                status, metrics["completed_instances"] = "Completed", metrics["completed_instances"] + 1
+            if key in done_keys: status, metrics["completed_instances"] = "Completed", metrics["completed_instances"] + 1
             else:
                 cde_completed = False
                 job_state = state_db.get(key, {}).get("status", "Pending")
@@ -259,7 +253,6 @@ def dashboard():
         cdes.append({"name": cde_name, "target_apps": list(target_apps), "instances": instances, "completed": cde_completed})
 
     return render_template("dashboard.html", metrics=metrics, cdes=cdes, active_project=project)
-
 
 @app.route("/api/edit_trace", methods=["POST"])
 def edit_trace():
@@ -281,12 +274,10 @@ def edit_trace():
     trigger_ui_refresh(project)
     return jsonify({"status": "success"})
 
-
 @app.route("/api/retrace", methods=["POST"])
 def api_retrace():
     project, data = session["active_project"], request.json
     cde_path = os.path.join(get_project_dir(project, "uploads"), "reporting_layers.xlsx")
-
     with file_lock:
         if os.path.exists(cde_path):
             xls = pd.ExcelFile(cde_path, engine="openpyxl")
@@ -294,12 +285,10 @@ def api_retrace():
                 df_done = pd.read_excel(xls, sheet_name="Done").fillna("")
                 df_done = df_done[~((df_done["CDE name"] == data['cde_name']) & (df_done["Current app code"] == data['app']) & (df_done["Current table/file name"] == data['table']) & (df_done["Current column/field name"] == data['column']))]
                 with pd.ExcelWriter(cde_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer: df_done.to_excel(writer, sheet_name="Done", index=False)
-
     delete_state_for_key(project, f"{data['cde_name']}|{data['app']}|{data['table']}|{data['column']}")
     engine_log(project, data['cde_name'], f"Instance Reset triggered for {data['app']}")
     trigger_ui_refresh(project)
     return jsonify({"status": "success"})
-
 
 @app.route("/trace/<cde_name>/<app_code>/<table_name>/<column_name>")
 def trace(cde_name, app_code, table_name, column_name):
@@ -307,70 +296,60 @@ def trace(cde_name, app_code, table_name, column_name):
     key = f"{cde_name}|{app_code}|{table_name}|{column_name}"
     state = load_state(project)
     resume_data = state.get(key, {})
-
-    return render_template(
-        "trace.html", cde_name=cde_name, app_code=app_code, table_name=table_name, column_name=column_name,
-        target_apps=request.args.get("targets", ""), resume_auto=request.args.get("resume_auto", "false"),
-        resume_stack=resume_data.get("stack", []), resume_pending=resume_data.get("pendingBranches", []), resume_completed=resume_data.get("completedPaths", [])
-    )
-
+    return render_template("trace.html", cde_name=cde_name, app_code=app_code, table_name=table_name, column_name=column_name, target_apps=request.args.get("targets", ""), resume_auto=request.args.get("resume_auto", "false"), resume_stack=resume_data.get("stack", []), resume_pending=resume_data.get("pendingBranches", []), resume_completed=resume_data.get("completedPaths", []))
 
 @app.route("/api/save_midway", methods=["POST"])
 def save_midway():
-    project = session['active_project']
-    data = request.json
-    cde_name, stack = data["cde_name"], data["stack"]
-    target_key = f"{cde_name}|{stack[0]['app']}|{stack[0]['original_table']}|{stack[0]['original_col']}"
-
-    update_state_for_key(project, target_key, {
-        "status": "NEEDS_REVIEW", "stack": stack, "pendingBranches": data.get("pendingBranches", []),
+    project, data = session['active_project'], request.json
+    update_state_for_key(project, f"{data['cde_name']}|{data['stack'][0]['app']}|{data['stack'][0]['original_table']}|{data['stack'][0]['original_col']}", {
+        "status": "NEEDS_REVIEW", "stack": data["stack"], "pendingBranches": data.get("pendingBranches", []),
         "completedPaths": data.get("completedPaths", []), "reason": "Midway Save by User (Paused)", "timestamp": str(datetime.now())
     })
     trigger_ui_refresh(project)
     return jsonify({"status": "success"})
 
-
 # ==========================================
-# ⚡ OPTIMIZED FAST-SEARCH ALGORITHM
+# ⚡ O(1) DICTIONARY SEARCH (BYPASSES PANDAS)
 # ==========================================
-def search_dataframe(df, app_code, table, col):
+def search_index_fast(cache_idx, app_code, table, col):
     app_code, table, col = str(app_code).strip().upper(), str(table).strip().upper(), str(col).strip().upper()
     if not app_code or app_code == "NAN" or not table or table == "NAN" or not col or col == "NAN": 
-        return pd.DataFrame(), "No Match"
+        return [], "No Match"
         
-    if df.empty or "clean_app" not in df.columns:
-        return pd.DataFrame(), "No Match"
+    # 1. Exact Match (O(1) Lookup)
+    ekey = (app_code, table, col)
+    if ekey in cache_idx.exact_idx:
+        return cache_idx.exact_idx[ekey], "Exact Match"
 
-    exact = df[(df["clean_app"] == app_code) & (df["clean_table"] == table) & (df["clean_col"] == col)]
-    if not exact.empty: return exact, "Exact Match"
+    # 2. Flexible Match (O(1) Lookup)
+    ftbl, fcol = flexible_normalize(table), flexible_normalize(col)
+    fkey = (app_code, ftbl, fcol)
+    if fkey in cache_idx.flex_idx:
+        return cache_idx.flex_idx[fkey], "Flexible Match"
 
-    flex_table_val = flexible_normalize(table)
-    flex_col_val = flexible_normalize(col)
-    flex = df[(df["clean_app"] == app_code) & (df["flex_table"] == flex_table_val) & (df["flex_col"] == flex_col_val)]
-    if not flex.empty: return flex, "Flexible Match"
-
-    app_filtered = df[df["clean_app"] == app_code]
-    if app_filtered.empty: return pd.DataFrame(), "No Match"
-
-    choices_list = [f"{r['clean_table']} | {r['clean_col']}" for _, r in app_filtered[["clean_table", "clean_col"]].drop_duplicates().iterrows()]
+    # 3. Fuzzy Match
+    choices = list(cache_idx.app_choices.get(app_code, set()))
+    if not choices: return [], "No Match"
     
-    # --- BOOSTED SEARCH LIMITS FOR 'PARTY MODE' ---
-    FUZZY_LIMIT = 50
+    FUZZY_LIMIT = 60 # As per user settings
     
     if USE_RAPIDFUZZ:
-        close_matches = process.extract(f"{table} | {col}", choices_list, limit=FUZZY_LIMIT, score_cutoff=60)
+        close_matches = process.extract(f"{table} | {col}", choices, limit=FUZZY_LIMIT, score_cutoff=60)
         if close_matches:
             parts = close_matches[0][0].split(" | ")
-            fuzzy = df[(df["clean_app"] == app_code) & (df["clean_table"] == parts[0]) & (df["clean_col"] == (parts[1] if len(parts) > 1 else ""))]
-            if not fuzzy.empty: return fuzzy, "Fuzzy Match"
+            # Reverse lookup the fuzzy string back to Exact Match
+            f_tbl_exact, f_col_exact = parts[0], parts[1] if len(parts) > 1 else ""
+            if (app_code, f_tbl_exact, f_col_exact) in cache_idx.exact_idx:
+                return cache_idx.exact_idx[(app_code, f_tbl_exact, f_col_exact)], "Fuzzy Match"
     else:
-        close_matches = difflib.get_close_matches(f"{table} | {col}", choices_list, n=FUZZY_LIMIT, cutoff=0.3)
+        close_matches = difflib.get_close_matches(f"{table} | {col}", choices, n=FUZZY_LIMIT, cutoff=0.3)
         if close_matches:
             parts = close_matches[0].split(" | ")
-            fuzzy = df[(df["clean_app"] == app_code) & (df["clean_table"] == parts[0]) & (df["clean_col"] == (parts[1] if len(parts) > 1 else ""))]
-            if not fuzzy.empty: return fuzzy, "Fuzzy Match"
+            f_tbl_exact, f_col_exact = parts[0], parts[1] if len(parts) > 1 else ""
+            if (app_code, f_tbl_exact, f_col_exact) in cache_idx.exact_idx:
+                return cache_idx.exact_idx[(app_code, f_tbl_exact, f_col_exact)], "Fuzzy Match"
 
-    return pd.DataFrame(), "No Match"
+    return [], "No Match"
 
 
 def execute_search_api_logic(project_name, cde_name, app_code, table, col, target_apps):
@@ -378,18 +357,23 @@ def execute_search_api_logic(project_name, cde_name, app_code, table, col, targe
     file_memory = get_file_memory(project_name)
 
     def process_cached_file(file_name, source_label):
-        df = get_cached_dataframe(project_name, file_name, sheet_name=0)
-        if df.empty: return
+        cache_idx = get_cached_index(project_name, file_name, sheet_name=0)
+        if not cache_idx: return
 
-        matches, match_type = search_dataframe(df, app_code, table, col)
-        if matches.empty: return
+        # Raw Dicts from O(1) Search!
+        matched_rows, match_type = search_index_fast(cache_idx, app_code, table, col)
+        if not matched_rows: return
 
-        matches = matches.copy()
-        matches["group_id"] = matches["file"].astype(str) + "||" + matches.get("Report name", "N/A").astype(str) + "||" + matches.get("CDE name", "N/A").astype(str)
+        # Group by Target Report naturally
+        grouped = {}
+        for row in matched_rows:
+            g_id = f"{row.get('file','N/A')}||{row.get('Report name','N/A')}||{row.get('CDE name','N/A')}"
+            if g_id not in grouped: grouped[g_id] = []
+            grouped[g_id].append(row)
 
-        for gid, group in matches.groupby("group_id"):
-            rep_row = group.iloc[0]
-            distinct_sources = sorted(group["Source app code"].dropna().astype(str).str.strip().str.upper().unique().tolist())
+        for gid, rows in grouped.items():
+            rep_row = rows[0]
+            distinct_sources = sorted(list(set(str(r.get("Source app code", "")).strip().upper() for r in rows if pd.notna(r.get("Source app code")))))
             if not distinct_sources: continue
 
             file_name_str = str(rep_row.get("file", "N/A"))
@@ -398,26 +382,24 @@ def execute_search_api_logic(project_name, cde_name, app_code, table, col, targe
             score += {"Exact Match": 100000, "Flexible Match": 50000}.get(match_type, 25000)
             score += file_memory.get(file_name_str, 0) * 150000
 
-            raw_rows = []
-            for _, row in group.iterrows():
-                src_app = str(row.get("Source app code", "")).strip().upper()
+            raw_out_rows = []
+            for r in rows:
+                src_app = str(r.get("Source app code", "")).strip().upper()
                 if src_app and src_app != "NAN":
-                    raw_rows.append({
-                        "next_app": src_app, "next_table": str(row.get("Source table/file name", "")).strip(), "next_col": str(row.get("Source column/field name", "")).strip(),
+                    raw_out_rows.append({
+                        "next_app": src_app, "next_table": str(r.get("Source table/file name", "")).strip(), "next_col": str(r.get("Source column/field name", "")).strip(),
                         "searched_table": table, "found_table": str(rep_row.get("Current table/file name", "")).strip(), "searched_col": col, "found_col": str(rep_row.get("Current column/field name", "")).strip(),
-                        "match_type": match_type, "raw_row_data": clean_raw_data_for_json(row.drop(labels=["clean_app", "clean_table", "clean_col", "flex_table", "flex_col", "group_id"], errors="ignore").to_dict()),
+                        "match_type": match_type, "raw_row_data": clean_raw_data_for_json(r),
                     })
 
-            if raw_rows:
+            if raw_out_rows:
                 unique_groups.append({
                     "source": source_label, "score": score, "match_type": match_type, "file_path": file_name_str, "report_name": str(rep_row.get("Report name", "N/A")), "cde_found": str(rep_row.get("CDE name", "")),
-                    "found_table": str(rep_row.get("Current table/file name", "")), "found_col": str(rep_row.get("Current column/field name", "")), "source_count": len(raw_rows), "distinct_sources": distinct_sources, "raw_rows": raw_rows,
+                    "found_table": str(rep_row.get("Current table/file name", "")), "found_col": str(rep_row.get("Current column/field name", "")), "source_count": len(raw_out_rows), "distinct_sources": distinct_sources, "raw_rows": raw_out_rows,
                 })
 
     process_cached_file("primary_lineage.xlsx", "Primary Report")
-    if not unique_groups: 
-        process_cached_file("global_lineage.xlsx", "Global Lineage")
-        
+    if not unique_groups: process_cached_file("global_lineage.xlsx", "Global Lineage")
     unique_groups.sort(key=lambda x: x["score"], reverse=True)
     return unique_groups
 
@@ -426,7 +408,6 @@ def execute_search_api_logic(project_name, cde_name, app_code, table, col, targe
 def api_search():
     data = request.json
     return jsonify({"candidates": execute_search_api_logic(session["active_project"], data["cde_name"], data["app"], data["table"], data["column"], data["target_apps"])})
-
 
 def write_lineage_to_files(project_name, cde_name, stack, is_dead_end):
     with file_lock:
@@ -441,8 +422,6 @@ def write_lineage_to_files(project_name, cde_name, stack, is_dead_end):
 
         for i in range(len(stack)):
             curr = stack[i]
-            
-            # 🛠 FIX: Extract node names from the edge row that brought us here!
             data_row = curr.get("raw_data", {}).copy()
             c_name = str(data_row.get("Current app name", "")).strip()
             
@@ -451,7 +430,7 @@ def write_lineage_to_files(project_name, cde_name, stack, is_dead_end):
                 s_app = next_node["app"]
                 s_table = next_node.get("reconciled_table", next_node["original_table"])
                 s_col = next_node.get("reconciled_col", next_node["original_col"])
-                s_name = str(data_row.get("Source app name", "")).strip() # Fixed name mixup!
+                s_name = str(data_row.get("Source app name", "")).strip() 
             else: 
                 s_app, s_table, s_col, s_name = "", "", "", ""
 
@@ -491,12 +470,19 @@ def save_lineage():
     return jsonify({"status": "success", "redirect": url_for("dashboard")})
 
 
-# --- AUTONOMOUS BREADTH-FIRST SEARCH ENGINE ---
+# ==========================================
+# 🚀 AUTONOMOUS BFS PATHFINDER (WITH A* PRUNING)
+# ==========================================
 def process_instance_background(project_name, cde_name, target_key, initial_raw_data=None):
     try:
         engine_log(project_name, cde_name, f"🚀 Started background Auto-Resolve Pathfinder for {target_key.split('|')[1]}")
         
-        df = get_cached_dataframe(project_name, "reporting_layers.xlsx", sheet_name="Sheet1")
+        # Load targets directly from Excel
+        cde_path = os.path.join(get_project_dir(project_name, 'uploads'), "reporting_layers.xlsx")
+        with file_lock:
+            xls = pd.ExcelFile(cde_path, engine="openpyxl")
+            df = pd.read_excel(xls, "Sheet1").fillna("")
+
         target_apps = []
         for _, row in df[df["CDE name"] == cde_name].iterrows():
             target_str = str(row.get("Target App Codes", ""))
@@ -521,16 +507,22 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
         stacks_to_process = [stack] + pending_branches
         finished_paths = completed_paths
         
-        # 🚀 EXPANDED BOUNDARIES FOR THE PARTY
         MAX_DEPTH = 60
         MAX_EVALS = 100000
         FUZZY_BRANCH_LIMIT = 30
-        
         eval_count = 0
+
+        # 🧠 A* PATH PRUNING CACHE: Prevents the Combinatorial Explosion!
+        VISITED_STATES = {} 
+        SEARCH_MEMO = {}
 
         while stacks_to_process and eval_count < MAX_EVALS:
             eval_count += 1
             
+            # Print heartbeat to console every 1000 nodes so you know it's flying
+            if eval_count % 1000 == 0:
+                engine_log(project_name, cde_name, f"⚡ Processed {eval_count} branches. Queue size: {len(stacks_to_process)}...")
+
             curr_state = load_state(project_name)
             if target_key not in curr_state or curr_state[target_key].get("status") not in ["PROCESSING", "NEEDS_REVIEW"]:
                 engine_log(project_name, cde_name, "⚠️ Job aborted by User Reset.")
@@ -538,38 +530,45 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
 
             current_stack = stacks_to_process.pop(0)
             current_node = current_stack[-1]
-
-            ancestor_keys = [f"{n['app']}|{n.get('original_table')}|{n.get('original_col')}" for n in current_stack[:-1]]
             curr_key = f"{current_node['app']}|{current_node.get('original_table')}|{current_node.get('original_col')}"
-            
-            engine_log(project_name, cde_name, f"🔍 Evaluating Hop {len(current_stack)}: {current_node['app']} -> {current_node.get('original_table')}")
 
+            # 🧠 1. LOOP DETECTION (Vertical Pruning)
+            ancestor_keys = [f"{n['app']}|{n.get('original_table')}|{n.get('original_col')}" for n in current_stack[:-1]]
             if curr_key in ancestor_keys or len(current_stack) > MAX_DEPTH:
                 msg = "Circular Loop Detected" if curr_key in ancestor_keys else "Max Depth Reached"
                 current_stack[-1]["notes"] = msg
                 finished_paths.append({"stack": current_stack, "is_dead_end": True})
-                engine_log(project_name, cde_name, f"🛑 Branch halted: {msg}")
                 continue
 
-            candidates = execute_search_api_logic(project_name, cde_name, current_node["app"], current_node.get("original_table", current_node.get("reconciled_table")), current_node.get("original_col", current_node.get("reconciled_col")), target_apps)
+            # 🧠 2. A* STATE PRUNING (Horizontal Pruning)
+            path_targets = len(set(n["app"] for n in current_stack if n["app"] in target_apps))
+            path_confidence = sum(n.get("cand_score", 0) for n in current_stack)
+            path_depth = len(current_stack)
+            current_state_score = (path_targets, path_confidence, -path_depth) # Higher is better
+            
+            if curr_key in VISITED_STATES:
+                best_prev = VISITED_STATES[curr_key]
+                if current_state_score <= best_prev:
+                    # We reached this exact Node via a better or equal path previously. Kill this redundant branch!
+                    continue
+            VISITED_STATES[curr_key] = current_state_score
+
+            # 🧠 3. SEARCH MEMOIZATION (Skip redundant file queries)
+            if curr_key in SEARCH_MEMO:
+                candidates = SEARCH_MEMO[curr_key]
+            else:
+                candidates = execute_search_api_logic(project_name, cde_name, current_node["app"], current_node.get("original_table", current_node.get("reconciled_table")), current_node.get("original_col", current_node.get("reconciled_col")), target_apps)
+                SEARCH_MEMO[curr_key] = candidates
 
             if not candidates:
                 current_stack[-1]["notes"] = "Dead End (End of Discovered Lineage)"
                 finished_paths.append({"stack": current_stack, "is_dead_end": True})
-                engine_log(project_name, cde_name, "🛑 Branch halted: Dead End reached.")
                 continue
 
             exact_matches = [c for c in candidates if c["match_type"] == "Exact Match"]
-            if exact_matches:
-                candidates_to_explore = exact_matches 
-                engine_log(project_name, cde_name, f"✅ Found {len(exact_matches)} Exact Matches. Pruning fuzzy options.")
-            else:
-                candidates_to_explore = candidates[:FUZZY_BRANCH_LIMIT] 
-                engine_log(project_name, cde_name, f"⚠️ No exact match. Branching {len(candidates_to_explore)} best Fuzzy/Flexible paths.")
+            candidates_to_explore = exact_matches if exact_matches else candidates[:FUZZY_BRANCH_LIMIT] 
             
             for cand in candidates_to_explore:
-                track_file_usage(project_name, cand.get("file_path"))
-                
                 for src in cand["raw_rows"]:
                     new_stack = copy.deepcopy(current_stack)
                     
@@ -582,19 +581,14 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
                         rec_table = ft if str(st).strip().upper() == str(ft).strip().upper() else f"{st}/{ft}"
                         rec_col = fc if str(sc).strip().upper() == str(fc).strip().upper() else f"{sc}/{fc}"
                     else:
-                        rec_table = ft
-                        rec_col = fc
+                        rec_table, rec_col = ft, fc
                     
                     new_stack[-1]["reconciled_table"] = rec_table
                     new_stack[-1]["reconciled_col"] = rec_col
-                    
-                    # 🛠 FIX: Only attach the row identifying the edge transition
                     new_stack[-1]["raw_data"] = src["raw_row_data"]
                     new_stack[-1]["cand_score"] = cand.get("score", 0)
 
                     next_app = src["next_app"]
-                    
-                    # 🛠 FIX: The new node only inherits its own "Current App Name" from the edge's Source App Name
                     new_node = {
                         "app": next_app, 
                         "original_table": src["next_table"], 
@@ -606,9 +600,9 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
                     }
                     
                     new_stack.append(new_node)
-                    if next_app in target_apps: engine_log(project_name, cde_name, f"🎯 TARGET APP HIT: {next_app}! Pushing branch to queue to explore further downstream.")
                     stacks_to_process.append(new_stack)
 
+        # 🧠 SCORING THE WINNER
         for stk in stacks_to_process:
             stk[-1]["notes"] = "Max Exploration Limit Reached"
             finished_paths.append({"stack": stk, "is_dead_end": False})
@@ -625,7 +619,7 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
             best_len = len(best_path_dict["stack"])
             best_targets = len(set(n["app"] for n in best_path_dict["stack"] if n["app"] in target_apps))
             
-            engine_log(project_name, cde_name, f"🏆 WINNER PICKED! Length: {best_len} hops. Targets Hit: {best_targets}.")
+            engine_log(project_name, cde_name, f"🏆 WINNER PICKED! Length: {best_len} hops. Targets Hit: {best_targets}. Total Branches Evaluated: {eval_count}.")
             
             write_lineage_to_files(project_name, cde_name, best_path_dict["stack"], best_path_dict["is_dead_end"])
             update_state_for_key(project_name, target_key, {"status": "RESOLVED", "stack": best_path_dict["stack"], "timestamp": str(datetime.now())})
@@ -646,9 +640,9 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
 @app.route("/api/auto_resolve/start", methods=["POST"])
 def start_auto_resolve():
     project = session["active_project"]
-    get_cached_dataframe(project, "reporting_layers.xlsx", sheet_name="Sheet1")
-    get_cached_dataframe(project, "primary_lineage.xlsx", sheet_name=0)
-    get_cached_dataframe(project, "global_lineage.xlsx", sheet_name=0)
+    # Prime Cache
+    get_cached_index(project, "primary_lineage.xlsx", sheet_name=0)
+    get_cached_index(project, "global_lineage.xlsx", sheet_name=0)
 
     cde_path = os.path.join(get_project_dir(project, "uploads"), "reporting_layers.xlsx")
     with file_lock:
@@ -672,8 +666,8 @@ def start_single_auto_resolve():
     project, data = session["active_project"], request.json
     target_key = f"{data['cde_name']}|{data['app']}|{data['table']}|{data['column']}"
     
-    get_cached_dataframe(project, "primary_lineage.xlsx", sheet_name=0)
-    get_cached_dataframe(project, "global_lineage.xlsx", sheet_name=0)
+    get_cached_index(project, "primary_lineage.xlsx", sheet_name=0)
+    get_cached_index(project, "global_lineage.xlsx", sheet_name=0)
 
     with file_lock:
         df = pd.read_excel(os.path.join(get_project_dir(project, "uploads"), "reporting_layers.xlsx"), "Sheet1", engine="openpyxl").fillna("")
