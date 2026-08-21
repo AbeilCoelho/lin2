@@ -43,7 +43,7 @@ executor = ThreadPoolExecutor(max_workers=8)
 file_lock = threading.RLock()
 
 # ==========================================
-# 🚀 NEW: HIGH-PERFORMANCE MEMORY CACHE
+# 🚀 HIGH-PERFORMANCE MEMORY CACHE
 # ==========================================
 GLOBAL_DF_CACHE = {}
 cache_lock = threading.RLock()
@@ -67,11 +67,9 @@ def get_cached_dataframe(project_name, file_name, sheet_name=0):
         if not os.path.exists(file_path):
             return pd.DataFrame()
             
-        # Load file (Thread-safe reading)
         with file_lock:
             df = pd.read_excel(file_path, sheet_name=sheet_name, engine="openpyxl").fillna("")
         
-        # PRE-COMPUTE SEARCH OPTIMIZATIONS (Saves huge CPU during BFS loops)
         if "Current app code" in df.columns:
             for c in ["Current app code", "Current table/file name", "Current column/field name"]:
                 if c not in df.columns: df[c] = ""
@@ -81,7 +79,6 @@ def get_cached_dataframe(project_name, file_name, sheet_name=0):
             df["clean_table"] = df["Current table/file name"]
             df["clean_col"] = df["Current column/field name"]
             
-            # Pre-apply Regex normalization for flexible matching
             df["flex_table"] = df["clean_table"].apply(flexible_normalize)
             df["flex_col"] = df["clean_col"].apply(flexible_normalize)
             
@@ -198,7 +195,7 @@ def set_project():
         session["active_project"] = project_name
         get_project_dir(project_name, "uploads")
         get_project_dir(project_name, "outputs")
-        clear_project_cache(project_name) # Clear RAM cache on project load
+        clear_project_cache(project_name)
     return redirect(url_for("index"))
 
 @app.route("/upload", methods=["POST"])
@@ -214,7 +211,7 @@ def process_upload():
     if "global_lineage_file" in request.files and request.files["global_lineage_file"].filename:
         request.files["global_lineage_file"].save(os.path.join(upload_dir, "global_lineage.xlsx"))
     
-    clear_project_cache(project) # Force reload of new data
+    clear_project_cache(project)
     return redirect(url_for("dashboard"))
 
 @app.route("/dashboard")
@@ -334,14 +331,11 @@ def save_midway():
     trigger_ui_refresh(project)
     return jsonify({"status": "success"})
 
+
 # ==========================================
 # ⚡ OPTIMIZED FAST-SEARCH ALGORITHM
 # ==========================================
 def search_dataframe(df, app_code, table, col):
-    """
-    Operates on the pre-computed RAM-cached DataFrame. 
-    Skips redundant `.apply()` calls, making searches near instantaneous.
-    """
     app_code, table, col = str(app_code).strip().upper(), str(table).strip().upper(), str(col).strip().upper()
     if not app_code or app_code == "NAN" or not table or table == "NAN" or not col or col == "NAN": 
         return pd.DataFrame(), "No Match"
@@ -349,17 +343,14 @@ def search_dataframe(df, app_code, table, col):
     if df.empty or "clean_app" not in df.columns:
         return pd.DataFrame(), "No Match"
 
-    # 1. Exact Match Check (Vectorized)
     exact = df[(df["clean_app"] == app_code) & (df["clean_table"] == table) & (df["clean_col"] == col)]
     if not exact.empty: return exact, "Exact Match"
 
-    # 2. Flexible Match Check (Comparing against pre-computed flex columns)
     flex_table_val = flexible_normalize(table)
     flex_col_val = flexible_normalize(col)
     flex = df[(df["clean_app"] == app_code) & (df["flex_table"] == flex_table_val) & (df["flex_col"] == flex_col_val)]
     if not flex.empty: return flex, "Flexible Match"
 
-    # 3. Fuzzy Match Check
     app_filtered = df[df["clean_app"] == app_code]
     if app_filtered.empty: return pd.DataFrame(), "No Match"
 
@@ -372,7 +363,7 @@ def search_dataframe(df, app_code, table, col):
             fuzzy = df[(df["clean_app"] == app_code) & (df["clean_table"] == parts[0]) & (df["clean_col"] == (parts[1] if len(parts) > 1 else ""))]
             if not fuzzy.empty: return fuzzy, "Fuzzy Match"
     else:
-        close_matches = difflib.get_close_matches(f"{table} | {col}", choices_list, n=5, cutoff=0.3)
+        close_matches = difflib.get_close_matches(f"{table} | {col}", choices_list, n=15, cutoff=0.3)
         if close_matches:
             parts = close_matches[0].split(" | ")
             fuzzy = df[(df["clean_app"] == app_code) & (df["clean_table"] == parts[0]) & (df["clean_col"] == (parts[1] if len(parts) > 1 else ""))]
@@ -386,7 +377,6 @@ def execute_search_api_logic(project_name, cde_name, app_code, table, col, targe
     file_memory = get_file_memory(project_name)
 
     def process_cached_file(file_name, source_label):
-        # ⚡ PULLS FROM RAM CACHE INSTEAD OF DISK!
         df = get_cached_dataframe(project_name, file_name, sheet_name=0)
         if df.empty: return
 
@@ -500,7 +490,6 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
     try:
         engine_log(project_name, cde_name, f"🚀 Started background Auto-Resolve Pathfinder for {target_key.split('|')[1]}")
         
-        # Load targets directly from cache!
         df = get_cached_dataframe(project_name, "reporting_layers.xlsx", sheet_name="Sheet1")
         target_apps = []
         for _, row in df[df["CDE name"] == cde_name].iterrows():
@@ -526,14 +515,13 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
         stacks_to_process = [stack] + pending_branches
         finished_paths = completed_paths
         
-        MAX_DEPTH = 15
-        MAX_EVALS = 300
+        MAX_DEPTH = 30
+        MAX_EVALS = 600
         eval_count = 0
 
         while stacks_to_process and eval_count < MAX_EVALS:
             eval_count += 1
             
-            # ABORT CHECK
             curr_state = load_state(project_name)
             if target_key not in curr_state or curr_state[target_key].get("status") not in ["PROCESSING", "NEEDS_REVIEW"]:
                 engine_log(project_name, cde_name, "⚠️ Job aborted by User Reset.")
@@ -575,8 +563,25 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
                 
                 for src in cand["raw_rows"]:
                     new_stack = copy.deepcopy(current_stack)
-                    new_stack[-1]["reconciled_table"] = cand["found_table"]
-                    new_stack[-1]["reconciled_col"] = src.get("found_col") or current_node.get("original_col", "")
+                    
+                    # ==========================================
+                    # 🔧 SMART CONCATENATION FOR FUZZY MATCHES 
+                    # ==========================================
+                    st = src.get("searched_table", current_node.get("original_table"))
+                    sc = src.get("searched_col", current_node.get("original_col"))
+                    ft = cand["found_table"]
+                    fc = src.get("found_col", cand.get("found_col", current_node.get("original_col", "")))
+                    
+                    # If it's a Fuzzy/Flexible match, automatically concatenate the searched and found strings.
+                    if "Exact" not in cand["match_type"]:
+                        rec_table = ft if str(st).strip().upper() == str(ft).strip().upper() else f"{st}/{ft}"
+                        rec_col = fc if str(sc).strip().upper() == str(fc).strip().upper() else f"{sc}/{fc}"
+                    else:
+                        rec_table = ft
+                        rec_col = fc
+                    
+                    new_stack[-1]["reconciled_table"] = rec_table
+                    new_stack[-1]["reconciled_col"] = rec_col
                     new_stack[-1]["raw_data"] = src["raw_row_data"]
                     new_stack[-1]["cand_score"] = cand.get("score", 0)
 
@@ -632,7 +637,6 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
 @app.route("/api/auto_resolve/start", methods=["POST"])
 def start_auto_resolve():
     project = session["active_project"]
-    # Prime the cache BEFORE starting workers so they don't block each other!
     get_cached_dataframe(project, "reporting_layers.xlsx", sheet_name="Sheet1")
     get_cached_dataframe(project, "primary_lineage.xlsx", sheet_name=0)
     get_cached_dataframe(project, "global_lineage.xlsx", sheet_name=0)
@@ -659,7 +663,6 @@ def start_single_auto_resolve():
     project, data = session["active_project"], request.json
     target_key = f"{data['cde_name']}|{data['app']}|{data['table']}|{data['column']}"
     
-    # Prime cache
     get_cached_dataframe(project, "primary_lineage.xlsx", sheet_name=0)
     get_cached_dataframe(project, "global_lineage.xlsx", sheet_name=0)
 
