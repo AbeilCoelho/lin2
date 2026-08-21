@@ -8,6 +8,7 @@ from flask import (
     session,
     flash,
 )
+from flask_socketio import SocketIO, emit
 from datetime import timedelta
 import pandas as pd
 import os
@@ -19,7 +20,7 @@ import copy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-# --- NEW: RAPIDFUZZ FALLBACK ---
+# --- RAPIDFUZZ FALLBACK ---
 try:
     from rapidfuzz import process
     USE_RAPIDFUZZ = True
@@ -33,11 +34,27 @@ app = Flask(__name__)
 app.secret_key = "123_lineage_super_secret_key"
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
 
+# --- INITIALIZE WEBSOCKETS ---
+socketio = SocketIO(app, async_mode='threading', cors_allowed_origins="*")
+
 WORKSPACE_DIR = "workspace"
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
 
 executor = ThreadPoolExecutor(max_workers=8)
 file_lock = threading.RLock()
+
+
+# --- LOGGING & WEBSOCKET EMITTERS ---
+def engine_log(project_name, cde_name, message):
+    """Prints to Python console AND streams live to the frontend Dashboard."""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    log_str = f"[{timestamp}] [CDE: {cde_name}] {message}"
+    print(log_str)
+    socketio.emit('engine_log', {'project': project_name, 'message': log_str})
+
+def trigger_ui_refresh(project_name):
+    """Tells the frontend Dashboard to refresh its HTML immediately."""
+    socketio.emit('refresh_dashboard', {'project': project_name})
 
 
 # --- PROJECT WORKSPACE HELPERS ---
@@ -202,7 +219,7 @@ def dashboard():
         if cde_completed: metrics["completed_cdes"] += 1
         cdes.append({"name": cde_name, "target_apps": list(target_apps), "instances": instances, "completed": cde_completed})
 
-    return render_template("dashboard.html", metrics=metrics, cdes=cdes)
+    return render_template("dashboard.html", metrics=metrics, cdes=cdes, active_project=project)
 
 @app.route("/api/edit_trace", methods=["POST"])
 def edit_trace():
@@ -220,6 +237,8 @@ def edit_trace():
         state[key]["status"] = "NEEDS_REVIEW"
         state[key]["reason"] = "Editing Trace Configuration"
         save_state(project, state)
+    
+    trigger_ui_refresh(project)
     return jsonify({"status": "success"})
 
 @app.route("/api/retrace", methods=["POST"])
@@ -236,6 +255,8 @@ def api_retrace():
                 with pd.ExcelWriter(cde_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer: df_done.to_excel(writer, sheet_name="Done", index=False)
 
     delete_state_for_key(project, f"{data['cde_name']}|{data['app']}|{data['table']}|{data['column']}")
+    engine_log(project, data['cde_name'], f"Instance Reset triggered for {data['app']}")
+    trigger_ui_refresh(project)
     return jsonify({"status": "success"})
 
 @app.route("/trace/<cde_name>/<app_code>/<table_name>/<column_name>")
@@ -253,11 +274,20 @@ def trace(cde_name, app_code, table_name, column_name):
 
 @app.route("/api/save_midway", methods=["POST"])
 def save_midway():
+    project = session['active_project']
     data = request.json
-    update_state_for_key(session['active_project'], f"{data['cde_name']}|{data['stack'][0]['app']}|{data['stack'][0]['original_table']}|{data['stack'][0]['original_col']}", {
-        "status": "NEEDS_REVIEW", "stack": data["stack"], "pendingBranches": data.get("pendingBranches", []),
-        "completedPaths": data.get("completedPaths", []), "reason": "Midway Save by User (Paused)", "timestamp": str(datetime.now())
+    cde_name, stack = data["cde_name"], data["stack"]
+    target_key = f"{cde_name}|{stack[0]['app']}|{stack[0]['original_table']}|{stack[0]['original_col']}"
+
+    update_state_for_key(project, target_key, {
+        "status": "NEEDS_REVIEW",
+        "stack": stack,
+        "pendingBranches": data.get("pendingBranches", []),
+        "completedPaths": data.get("completedPaths", []),
+        "reason": "Midway Save by User (Paused)",
+        "timestamp": str(datetime.now())
     })
+    trigger_ui_refresh(project)
     return jsonify({"status": "success"})
 
 
@@ -283,19 +313,18 @@ def search_dataframe(df, app_code, table, col):
 
     choices_list = [f"{r['clean_table']} | {r['clean_col']}" for _, r in app_filtered[["clean_table", "clean_col"]].drop_duplicates().iterrows()]
     
-    # --- SMART FUZZY SEARCH ---
     if USE_RAPIDFUZZ:
         close_matches = process.extract(f"{table} | {col}", choices_list, limit=3, score_cutoff=60)
         if close_matches:
             parts = close_matches[0][0].split(" | ")
             fuzzy = df[(df["clean_app"] == app_code) & (df["clean_table"] == parts[0]) & (df["clean_col"] == (parts[1] if len(parts) > 1 else ""))]
-            if not fuzzy.empty: return fuzzy, "Fuzzy Match (RapidFuzz)"
+            if not fuzzy.empty: return fuzzy, "Fuzzy Match"
     else:
         close_matches = difflib.get_close_matches(f"{table} | {col}", choices_list, n=5, cutoff=0.3)
         if close_matches:
             parts = close_matches[0].split(" | ")
             fuzzy = df[(df["clean_app"] == app_code) & (df["clean_table"] == parts[0]) & (df["clean_col"] == (parts[1] if len(parts) > 1 else ""))]
-            if not fuzzy.empty: return fuzzy, "Fuzzy Match (Difflib)"
+            if not fuzzy.empty: return fuzzy, "Fuzzy Match"
 
     return pd.DataFrame(), "No Match"
 
@@ -405,12 +434,14 @@ def save_lineage():
     write_lineage_to_files(project, data["cde_name"], data["stack"], data.get("is_dead_end", False))
     if len(data["stack"]) > 1 and "file" in data["stack"][-1].get("raw_data", {}): track_file_usage(project, data["stack"][-1]["raw_data"]["file"])
     update_state_for_key(project, f"{data['cde_name']}|{data['stack'][0]['app']}|{data['stack'][0]['original_table']}|{data['stack'][0]['original_col']}", {"status": "RESOLVED", "stack": data["stack"], "timestamp": str(datetime.now())})
+    trigger_ui_refresh(project)
     return jsonify({"status": "success", "redirect": url_for("dashboard")})
 
 
 # --- AUTONOMOUS BREADTH-FIRST SEARCH ENGINE ---
 def process_instance_background(project_name, cde_name, target_key, initial_raw_data=None):
     try:
+        engine_log(project_name, cde_name, f"🚀 Started background Auto-Resolve Pathfinder for {target_key.split('|')[1]}")
         cde_path = os.path.join(get_project_dir(project_name, 'uploads'), "reporting_layers.xlsx")
 
         with file_lock:
@@ -436,6 +467,7 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
             stack = [{"app": app_code, "original_table": table, "original_col": col, "reconciled_table": table, "reconciled_col": col, "raw_data": initial_raw_data or {}}]
 
         update_state_for_key(project_name, target_key, {"status": "PROCESSING", "stack": stack, "timestamp": str(datetime.now())})
+        trigger_ui_refresh(project_name)
 
         stacks_to_process = [stack] + pending_branches
         finished_paths = completed_paths
@@ -447,9 +479,10 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
         while stacks_to_process and eval_count < MAX_EVALS:
             eval_count += 1
             
-            # ABORT CHECK: If user clicked Reset, safely exit background thread
+            # ABORT CHECK
             curr_state = load_state(project_name)
             if target_key not in curr_state or curr_state[target_key].get("status") not in ["PROCESSING", "NEEDS_REVIEW"]:
+                engine_log(project_name, cde_name, "⚠️ Job aborted by User Reset.")
                 return
 
             current_stack = stacks_to_process.pop(0)
@@ -458,9 +491,13 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
             ancestor_keys = [f"{n['app']}|{n.get('original_table')}|{n.get('original_col')}" for n in current_stack[:-1]]
             curr_key = f"{current_node['app']}|{current_node.get('original_table')}|{current_node.get('original_col')}"
             
+            engine_log(project_name, cde_name, f"🔍 Evaluating Hop {len(current_stack)}: {current_node['app']} -> {current_node.get('original_table')}")
+
             if curr_key in ancestor_keys or len(current_stack) > MAX_DEPTH:
-                current_stack[-1]["notes"] = "Circular Loop Detected" if curr_key in ancestor_keys else "Max Depth Reached"
+                msg = "Circular Loop Detected" if curr_key in ancestor_keys else "Max Depth Reached"
+                current_stack[-1]["notes"] = msg
                 finished_paths.append({"stack": current_stack, "is_dead_end": True})
+                engine_log(project_name, cde_name, f"🛑 Branch halted: {msg}")
                 continue
 
             candidates = execute_search_api_logic(project_name, cde_name, current_node["app"], current_node.get("original_table", current_node.get("reconciled_table")), current_node.get("original_col", current_node.get("reconciled_col")), target_apps)
@@ -468,14 +505,17 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
             if not candidates:
                 current_stack[-1]["notes"] = "Dead End (End of Discovered Lineage)"
                 finished_paths.append({"stack": current_stack, "is_dead_end": True})
+                engine_log(project_name, cde_name, "🛑 Branch halted: Dead End reached.")
                 continue
 
-            # SMART PRUNING: Only branch fuzzy choices if a perfect exact match does not exist.
+            # SMART PRUNING
             exact_matches = [c for c in candidates if c["match_type"] == "Exact Match"]
             if exact_matches:
                 candidates_to_explore = exact_matches 
+                engine_log(project_name, cde_name, f"✅ Found {len(exact_matches)} Exact Matches. Pruning fuzzy options.")
             else:
                 candidates_to_explore = candidates[:3] 
+                engine_log(project_name, cde_name, f"⚠️ No exact match. Branching {len(candidates_to_explore)} best Fuzzy/Flexible paths.")
             
             for cand in candidates_to_explore:
                 track_file_usage(project_name, cand.get("file_path"))
@@ -499,7 +539,7 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
                     }
                     
                     new_stack.append(new_node)
-                    # CONTINUOUS TRACING: Even if we hit a target app, we keep exploring until Dead End!
+                    if next_app in target_apps: engine_log(project_name, cde_name, f"🎯 TARGET APP HIT: {next_app}! Pushing branch to queue to explore further downstream.")
                     stacks_to_process.append(new_stack)
 
         for stk in stacks_to_process:
@@ -507,7 +547,7 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
             finished_paths.append({"stack": stk, "is_dead_end": False})
 
         if finished_paths:
-            # SCORING THE WINNER: Most Targets Hit -> Highest Match Confidence -> Shortest Path length
+            # SCORING THE WINNER
             def score_path(p_dict):
                 stk = p_dict["stack"]
                 targets_hit = len(set(n["app"] for n in stk if n["app"] in target_apps))
@@ -516,15 +556,25 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
                 return (targets_hit, total_cand_score, -path_len)
                 
             best_path_dict = max(finished_paths, key=score_path)
+            best_len = len(best_path_dict["stack"])
+            best_targets = len(set(n["app"] for n in best_path_dict["stack"] if n["app"] in target_apps))
+            
+            engine_log(project_name, cde_name, f"🏆 WINNER PICKED! Length: {best_len} hops. Targets Hit: {best_targets}.")
+            
             write_lineage_to_files(project_name, cde_name, best_path_dict["stack"], best_path_dict["is_dead_end"])
             update_state_for_key(project_name, target_key, {"status": "RESOLVED", "stack": best_path_dict["stack"], "timestamp": str(datetime.now())})
         else:
+            engine_log(project_name, cde_name, "❌ No valid paths found. Requires human review.")
             update_state_for_key(project_name, target_key, {"status": "NEEDS_REVIEW", "stack": stack, "reason": "No valid paths found by engine.", "timestamp": str(datetime.now())})
+            
+        trigger_ui_refresh(project_name)
 
     except Exception as e:
         error_msg = f"System Error: {str(e)}"
         print(f"CRASH in background task for {target_key}: {traceback.format_exc()}")
+        engine_log(project_name, cde_name, f"CRITICAL ERROR: {error_msg}")
         update_state_for_key(project_name, target_key, {"status": "NEEDS_REVIEW", "stack": stack, "reason": error_msg, "timestamp": str(datetime.now())})
+        trigger_ui_refresh(project_name)
 
 
 @app.route("/api/auto_resolve/start", methods=["POST"])
@@ -567,6 +617,8 @@ def resume_auto_resolve():
 
     if len(data["stack"]) > 1 and "file" in data["stack"][-1].get("raw_data", {}): track_file_usage(project, data["stack"][-1]["raw_data"]["file"])
     update_state_for_key(project, target_key, {"status": "PROCESSING", "stack": data["stack"], "pendingBranches": data.get("pendingBranches", []), "completedPaths": data.get("completedPaths", []), "timestamp": str(datetime.now())})
+    trigger_ui_refresh(project)
+    
     executor.submit(process_instance_background, project, data["cde_name"], target_key)
     return jsonify({"status": "Resumed in background"})
 
@@ -645,4 +697,5 @@ def execute_tool(action):
     return jsonify({"status": "success", "message": f"{action.capitalize()} script executed successfully!"})
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    # RUN USING SOCKETIO INSTEAD OF STANDARD APP.RUN
+    socketio.run(app, debug=True, port=5000, allow_unsafe_werkzeug=True)

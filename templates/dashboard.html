@@ -38,7 +38,7 @@
     </div>
 </div>
 
-<div class="bg-white shadow rounded-lg overflow-hidden border border-gray-200">
+<div class="bg-white shadow rounded-lg overflow-hidden border border-gray-200 mb-8">
     <table class="min-w-full divide-y divide-gray-200">
         <thead class="bg-gray-50">
             <tr>
@@ -96,7 +96,6 @@
                                 </div>
                             {% endif %}
                             
-                            <!-- UNIVERSAL RESET BUTTON -->
                             <button onclick="resetTrace('{{ cde.name|escape }}', '{{ instance.app|escape }}', '{{ instance.table|escape }}', '{{ instance.column|escape }}')" 
                                     class="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 p-1.5 rounded transition shadow-sm ml-4 border border-red-100" title="Erase State & Restart Instance">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
@@ -110,24 +109,60 @@
     </table>
 </div>
 
+<!-- LIVE WEBSOCKET TERMINAL -->
+<div class="bg-gray-900 rounded-lg shadow-lg overflow-hidden border border-gray-700 h-64 flex flex-col">
+    <div class="bg-black px-4 py-2 border-b border-gray-800 flex justify-between items-center">
+        <h3 class="text-xs font-bold text-gray-300 uppercase tracking-widest font-mono flex items-center">
+            <span class="w-2 h-2 rounded-full bg-green-500 mr-2 animate-pulse"></span>
+            Live Engine Logs
+        </h3>
+        <button onclick="document.getElementById('console-output').innerHTML = ''" class="text-xs text-gray-500 hover:text-white transition">Clear</button>
+    </div>
+    <div id="console-output" class="p-4 flex-1 overflow-y-auto font-mono text-[11px] text-green-400 space-y-1">
+        <div class="text-gray-500 italic">Listening for Pathfinder background processes...</div>
+    </div>
+</div>
+
+<!-- Socket.IO Library -->
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+
 <script>
-    let pollInterval = null;
+    const activeProject = "{{ active_project }}";
+    
+    // --- WEBSOCKET CONNECTION ---
+    const socket = io();
 
-    function startPolling() {
-        if (!pollInterval) pollInterval = setInterval(refreshUI, 1500);
-    }
-    function stopPolling() {
-        if (pollInterval) {
-            clearInterval(pollInterval);
-            pollInterval = null;
-            const btn = document.getElementById('resolveBtn');
-            if (btn && btn.innerText.includes("Started")) {
-                btn.innerHTML = `<svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>Run Bulk Auto-Resolve`;
-            }
+    socket.on('connect', () => {
+        console.log("WebSocket connected.");
+    });
+
+    // Event 1: UI Refresh Trigger
+    socket.on('refresh_dashboard', (data) => {
+        if (data.project === activeProject) {
+            refreshUI_HTML();
         }
-    }
+    });
 
-    async function refreshUI() {
+    // Event 2: Live Console Stream
+    socket.on('engine_log', (data) => {
+        if (data.project === activeProject) {
+            const terminal = document.getElementById('console-output');
+            const newLog = document.createElement('div');
+            
+            // Syntax coloring for logs
+            let txt = data.message;
+            if (txt.includes('🏆') || txt.includes('🎯') || txt.includes('✅')) newLog.className = 'text-green-300 font-bold';
+            else if (txt.includes('⚠️') || txt.includes('🔍')) newLog.className = 'text-yellow-300';
+            else if (txt.includes('🛑') || txt.includes('❌') || txt.includes('CRITICAL')) newLog.className = 'text-red-400 font-bold';
+            
+            newLog.innerText = txt;
+            terminal.appendChild(newLog);
+            terminal.scrollTop = terminal.scrollHeight; // Auto-scroll to bottom
+        }
+    });
+
+    // DOM Swapping Function (Called by WebSockets now, not by Timer)
+    async function refreshUI_HTML() {
         try {
             const response = await fetch('/dashboard');
             const htmlText = await response.text();
@@ -137,20 +172,16 @@
             if (newTable) document.getElementById('table-body').innerHTML = newTable.innerHTML;
 
             const processingNode = doc.getElementById('metric-processing');
-            if (processingNode && parseInt(processingNode.innerText) === 0) stopPolling();
-        } catch (e) { console.error("Polling error:", e); }
+            if (processingNode && document.getElementById('metric-processing')) {
+                document.getElementById('metric-processing').innerText = processingNode.innerText;
+            }
+        } catch (e) { console.error("DOM Swap error:", e); }
     }
-
-    document.addEventListener("DOMContentLoaded", () => {
-        const processingNode = document.getElementById('metric-processing');
-        if (processingNode && parseInt(processingNode.innerText) > 0) startPolling();
-    });
 
     async function startAutoResolve() {
         document.getElementById('resolveBtn').innerText = "Job Started in Background...";
         await fetch('/api/auto_resolve/start', { method: 'POST' });
-        refreshUI();
-        startPolling();
+        // The backend will now emit 'refresh_dashboard' on its own!
     }
 
     async function autoResolveSingle(cde, app, table, col) {
@@ -158,8 +189,6 @@
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({cde_name: cde, app: app, table: table, column: col})
         });
-        refreshUI();
-        startPolling();
     }
 
     async function editTrace(cde, app, table, col) {
@@ -170,15 +199,12 @@
         window.location.href = `/trace/${encodeURIComponent(cde)}/${encodeURIComponent(app)}/${encodeURIComponent(table)}/${encodeURIComponent(col)}?resume_auto=true`;
     }
 
-    // NEW: Complete wipe/reset of a specific instance
     async function resetTrace(cde, app, table, col) {
         if(!confirm("Are you sure you want to completely erase memory and restart this trace?")) return;
         await fetch('/api/retrace', { 
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({cde_name: cde, app: app, table: table, column: col})
         });
-        refreshUI();
-        startPolling(); 
     }
 </script>
 {% endblock %}
