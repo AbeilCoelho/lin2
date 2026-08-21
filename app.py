@@ -34,7 +34,6 @@ app = Flask(__name__)
 app.secret_key = "123_lineage_super_secret_key"
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
 
-# --- INITIALIZE WEBSOCKETS ---
 socketio = SocketIO(app, async_mode='threading', cors_allowed_origins="*")
 
 WORKSPACE_DIR = "workspace"
@@ -43,17 +42,61 @@ os.makedirs(WORKSPACE_DIR, exist_ok=True)
 executor = ThreadPoolExecutor(max_workers=8)
 file_lock = threading.RLock()
 
+# ==========================================
+# 🚀 NEW: HIGH-PERFORMANCE MEMORY CACHE
+# ==========================================
+GLOBAL_DF_CACHE = {}
+cache_lock = threading.RLock()
+
+def clear_project_cache(project_name):
+    """Clears RAM cache when a user changes projects or uploads new files."""
+    with cache_lock:
+        keys_to_delete = [k for k in GLOBAL_DF_CACHE.keys() if k.startswith(project_name)]
+        for k in keys_to_delete:
+            del GLOBAL_DF_CACHE[k]
+
+def get_cached_dataframe(project_name, file_name, sheet_name=0):
+    """Loads an Excel file into RAM once, and pre-computes search columns for hyper-fast querying."""
+    cache_key = f"{project_name}_{file_name}_{sheet_name}"
+    
+    with cache_lock:
+        if cache_key in GLOBAL_DF_CACHE:
+            return GLOBAL_DF_CACHE[cache_key]
+            
+        file_path = os.path.join(get_project_dir(project_name, "uploads"), file_name)
+        if not os.path.exists(file_path):
+            return pd.DataFrame()
+            
+        # Load file (Thread-safe reading)
+        with file_lock:
+            df = pd.read_excel(file_path, sheet_name=sheet_name, engine="openpyxl").fillna("")
+        
+        # PRE-COMPUTE SEARCH OPTIMIZATIONS (Saves huge CPU during BFS loops)
+        if "Current app code" in df.columns:
+            for c in ["Current app code", "Current table/file name", "Current column/field name"]:
+                if c not in df.columns: df[c] = ""
+                df[c] = df[c].astype(str).str.strip().str.upper().replace("NAN", "")
+
+            df["clean_app"] = df["Current app code"]
+            df["clean_table"] = df["Current table/file name"]
+            df["clean_col"] = df["Current column/field name"]
+            
+            # Pre-apply Regex normalization for flexible matching
+            df["flex_table"] = df["clean_table"].apply(flexible_normalize)
+            df["flex_col"] = df["clean_col"].apply(flexible_normalize)
+            
+        GLOBAL_DF_CACHE[cache_key] = df
+        return df
+
 
 # --- LOGGING & WEBSOCKET EMITTERS ---
 def engine_log(project_name, cde_name, message):
-    """Prints to Python console AND streams live to the frontend Dashboard."""
     timestamp = datetime.now().strftime("%H:%M:%S")
     log_str = f"[{timestamp}] [CDE: {cde_name}] {message}"
     print(log_str)
     socketio.emit('engine_log', {'project': project_name, 'message': log_str})
 
 def trigger_ui_refresh(project_name):
-    """Tells the frontend Dashboard to refresh its HTML immediately."""
     socketio.emit('refresh_dashboard', {'project': project_name})
 
 
@@ -73,15 +116,13 @@ def make_json_serializable(obj):
         return [make_json_serializable(item) for item in obj]
     try:
         if pd.isna(obj): return None
-    except ValueError:
-        pass
+    except ValueError: pass
     if hasattr(obj, "isoformat"):
         try: return obj.isoformat()
-        except (ValueError, TypeError): return None
+        except: return None
     elif isinstance(obj, (int, float, str, bool, type(None))):
         return obj
-    else:
-        return str(obj)
+    return str(obj)
 
 def clean_raw_data_for_json(raw_dict):
     if not isinstance(raw_dict, dict): return raw_dict
@@ -157,6 +198,7 @@ def set_project():
         session["active_project"] = project_name
         get_project_dir(project_name, "uploads")
         get_project_dir(project_name, "outputs")
+        clear_project_cache(project_name) # Clear RAM cache on project load
     return redirect(url_for("index"))
 
 @app.route("/upload", methods=["POST"])
@@ -171,6 +213,8 @@ def process_upload():
         request.files["primary_lineage_file"].save(os.path.join(upload_dir, "primary_lineage.xlsx"))
     if "global_lineage_file" in request.files and request.files["global_lineage_file"].filename:
         request.files["global_lineage_file"].save(os.path.join(upload_dir, "global_lineage.xlsx"))
+    
+    clear_project_cache(project) # Force reload of new data
     return redirect(url_for("dashboard"))
 
 @app.route("/dashboard")
@@ -221,6 +265,7 @@ def dashboard():
 
     return render_template("dashboard.html", metrics=metrics, cdes=cdes, active_project=project)
 
+
 @app.route("/api/edit_trace", methods=["POST"])
 def edit_trace():
     project, data = session["active_project"], request.json
@@ -241,6 +286,7 @@ def edit_trace():
     trigger_ui_refresh(project)
     return jsonify({"status": "success"})
 
+
 @app.route("/api/retrace", methods=["POST"])
 def api_retrace():
     project, data = session["active_project"], request.json
@@ -259,6 +305,7 @@ def api_retrace():
     trigger_ui_refresh(project)
     return jsonify({"status": "success"})
 
+
 @app.route("/trace/<cde_name>/<app_code>/<table_name>/<column_name>")
 def trace(cde_name, app_code, table_name, column_name):
     project = session.get('active_project')
@@ -272,6 +319,7 @@ def trace(cde_name, app_code, table_name, column_name):
         resume_stack=resume_data.get("stack", []), resume_pending=resume_data.get("pendingBranches", []), resume_completed=resume_data.get("completedPaths", [])
     )
 
+
 @app.route("/api/save_midway", methods=["POST"])
 def save_midway():
     project = session['active_project']
@@ -280,34 +328,38 @@ def save_midway():
     target_key = f"{cde_name}|{stack[0]['app']}|{stack[0]['original_table']}|{stack[0]['original_col']}"
 
     update_state_for_key(project, target_key, {
-        "status": "NEEDS_REVIEW",
-        "stack": stack,
-        "pendingBranches": data.get("pendingBranches", []),
-        "completedPaths": data.get("completedPaths", []),
-        "reason": "Midway Save by User (Paused)",
-        "timestamp": str(datetime.now())
+        "status": "NEEDS_REVIEW", "stack": stack, "pendingBranches": data.get("pendingBranches", []),
+        "completedPaths": data.get("completedPaths", []), "reason": "Midway Save by User (Paused)", "timestamp": str(datetime.now())
     })
     trigger_ui_refresh(project)
     return jsonify({"status": "success"})
 
-
+# ==========================================
+# ⚡ OPTIMIZED FAST-SEARCH ALGORITHM
+# ==========================================
 def search_dataframe(df, app_code, table, col):
+    """
+    Operates on the pre-computed RAM-cached DataFrame. 
+    Skips redundant `.apply()` calls, making searches near instantaneous.
+    """
     app_code, table, col = str(app_code).strip().upper(), str(table).strip().upper(), str(col).strip().upper()
-    if not app_code or app_code == "NAN" or not table or table == "NAN" or not col or col == "NAN": return pd.DataFrame(), "No Match"
+    if not app_code or app_code == "NAN" or not table or table == "NAN" or not col or col == "NAN": 
+        return pd.DataFrame(), "No Match"
+        
+    if df.empty or "clean_app" not in df.columns:
+        return pd.DataFrame(), "No Match"
 
-    for c in ["Current app code", "Current table/file name", "Current column/field name"]:
-        if c not in df.columns: df[c] = ""
-        df[c] = df[c].astype(str).str.strip().str.upper().replace("NAN", "")
-
-    df["clean_app"], df["clean_table"], df["clean_col"] = df["Current app code"], df["Current table/file name"], df["Current column/field name"]
-
+    # 1. Exact Match Check (Vectorized)
     exact = df[(df["clean_app"] == app_code) & (df["clean_table"] == table) & (df["clean_col"] == col)]
     if not exact.empty: return exact, "Exact Match"
 
-    df["flex_table"], df["flex_col"] = df["clean_table"].apply(flexible_normalize), df["clean_col"].apply(flexible_normalize)
-    flex = df[(df["clean_app"] == app_code) & (df["flex_table"] == flexible_normalize(table)) & (df["flex_col"] == flexible_normalize(col))]
+    # 2. Flexible Match Check (Comparing against pre-computed flex columns)
+    flex_table_val = flexible_normalize(table)
+    flex_col_val = flexible_normalize(col)
+    flex = df[(df["clean_app"] == app_code) & (df["flex_table"] == flex_table_val) & (df["flex_col"] == flex_col_val)]
     if not flex.empty: return flex, "Flexible Match"
 
+    # 3. Fuzzy Match Check
     app_filtered = df[df["clean_app"] == app_code]
     if app_filtered.empty: return pd.DataFrame(), "No Match"
 
@@ -330,12 +382,13 @@ def search_dataframe(df, app_code, table, col):
 
 
 def execute_search_api_logic(project_name, cde_name, app_code, table, col, target_apps):
-    primary_path, global_path = os.path.join(get_project_dir(project_name, "uploads"), "primary_lineage.xlsx"), os.path.join(get_project_dir(project_name, "uploads"), "global_lineage.xlsx")
-    unique_groups, file_memory = [], get_file_memory(project_name)
+    unique_groups = []
+    file_memory = get_file_memory(project_name)
 
-    def process_file(file_path, source_label):
-        if not os.path.exists(file_path): return
-        with file_lock: df = pd.read_excel(file_path, engine="openpyxl").fillna("")
+    def process_cached_file(file_name, source_label):
+        # ⚡ PULLS FROM RAM CACHE INSTEAD OF DISK!
+        df = get_cached_dataframe(project_name, file_name, sheet_name=0)
+        if df.empty: return
 
         matches, match_type = search_dataframe(df, app_code, table, col)
         if matches.empty: return
@@ -370,15 +423,19 @@ def execute_search_api_logic(project_name, cde_name, app_code, table, col, targe
                     "found_table": str(rep_row.get("Current table/file name", "")), "found_col": str(rep_row.get("Current column/field name", "")), "source_count": len(raw_rows), "distinct_sources": distinct_sources, "raw_rows": raw_rows,
                 })
 
-    process_file(primary_path, "Primary Report")
-    if not unique_groups: process_file(global_path, "Global Lineage")
+    process_cached_file("primary_lineage.xlsx", "Primary Report")
+    if not unique_groups: 
+        process_cached_file("global_lineage.xlsx", "Global Lineage")
+        
     unique_groups.sort(key=lambda x: x["score"], reverse=True)
     return unique_groups
+
 
 @app.route("/api/search", methods=["POST"])
 def api_search():
     data = request.json
     return jsonify({"candidates": execute_search_api_logic(session["active_project"], data["cde_name"], data["app"], data["table"], data["column"], data["target_apps"])})
+
 
 def write_lineage_to_files(project_name, cde_name, stack, is_dead_end):
     with file_lock:
@@ -442,12 +499,9 @@ def save_lineage():
 def process_instance_background(project_name, cde_name, target_key, initial_raw_data=None):
     try:
         engine_log(project_name, cde_name, f"🚀 Started background Auto-Resolve Pathfinder for {target_key.split('|')[1]}")
-        cde_path = os.path.join(get_project_dir(project_name, 'uploads'), "reporting_layers.xlsx")
-
-        with file_lock:
-            xls = pd.ExcelFile(cde_path, engine="openpyxl")
-            df = pd.read_excel(xls, "Sheet1").fillna("")
-
+        
+        # Load targets directly from cache!
+        df = get_cached_dataframe(project_name, "reporting_layers.xlsx", sheet_name="Sheet1")
         target_apps = []
         for _, row in df[df["CDE name"] == cde_name].iterrows():
             target_str = str(row.get("Target App Codes", ""))
@@ -508,7 +562,6 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
                 engine_log(project_name, cde_name, "🛑 Branch halted: Dead End reached.")
                 continue
 
-            # SMART PRUNING
             exact_matches = [c for c in candidates if c["match_type"] == "Exact Match"]
             if exact_matches:
                 candidates_to_explore = exact_matches 
@@ -547,7 +600,6 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
             finished_paths.append({"stack": stk, "is_dead_end": False})
 
         if finished_paths:
-            # SCORING THE WINNER
             def score_path(p_dict):
                 stk = p_dict["stack"]
                 targets_hit = len(set(n["app"] for n in stk if n["app"] in target_apps))
@@ -580,8 +632,12 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
 @app.route("/api/auto_resolve/start", methods=["POST"])
 def start_auto_resolve():
     project = session["active_project"]
-    cde_path = os.path.join(get_project_dir(project, "uploads"), "reporting_layers.xlsx")
+    # Prime the cache BEFORE starting workers so they don't block each other!
+    get_cached_dataframe(project, "reporting_layers.xlsx", sheet_name="Sheet1")
+    get_cached_dataframe(project, "primary_lineage.xlsx", sheet_name=0)
+    get_cached_dataframe(project, "global_lineage.xlsx", sheet_name=0)
 
+    cde_path = os.path.join(get_project_dir(project, "uploads"), "reporting_layers.xlsx")
     with file_lock:
         xls = pd.ExcelFile(cde_path, engine="openpyxl")
         df = pd.read_excel(xls, "Sheet1").fillna("")
@@ -602,6 +658,10 @@ def start_auto_resolve():
 def start_single_auto_resolve():
     project, data = session["active_project"], request.json
     target_key = f"{data['cde_name']}|{data['app']}|{data['table']}|{data['column']}"
+    
+    # Prime cache
+    get_cached_dataframe(project, "primary_lineage.xlsx", sheet_name=0)
+    get_cached_dataframe(project, "global_lineage.xlsx", sheet_name=0)
 
     with file_lock:
         df = pd.read_excel(os.path.join(get_project_dir(project, "uploads"), "reporting_layers.xlsx"), "Sheet1", engine="openpyxl").fillna("")
@@ -697,5 +757,4 @@ def execute_tool(action):
     return jsonify({"status": "success", "message": f"{action.capitalize()} script executed successfully!"})
 
 if __name__ == "__main__":
-    # RUN USING SOCKETIO INSTEAD OF STANDARD APP.RUN
     socketio.run(app, debug=True, port=5000, allow_unsafe_werkzeug=True)
