@@ -5,21 +5,119 @@
 
     <!-- Pop-up Modal for Details -->
     <div x-show="showModal" class="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center" style="display: none;">
-        <div class="bg-white rounded-lg shadow-xl w-3/4 max-w-3xl max-h-[80vh] flex flex-col" @click.away="showModal = false">
+        <div class="bg-white rounded-lg shadow-xl w-3/4 max-w-4xl max-h-[90vh] flex flex-col" @click.away="showModal = false">
             <div class="p-4 border-b bg-gray-50 flex justify-between items-center rounded-t-lg">
                 <h3 class="font-bold text-rbcBlue text-lg">Instance Schema Details</h3>
                 <button @click="showModal = false" class="text-gray-400 hover:text-red-500 font-bold text-xl">&times;</button>
             </div>
-            <div class="p-4 overflow-y-auto grid grid-cols-2 gap-4 text-xs font-mono">
-                <template x-for="(val, key) in modalData" :key="key">
-                    <div x-show="val && val !== 'nan' && val !== ''" class="bg-gray-50 p-2 rounded border border-gray-200">
-                        <span class="font-bold text-gray-500 block mb-1 uppercase" x-text="key"></span>
-                        <span class="text-gray-900 break-all" x-text="val"></span>
+
+            <div class="p-6 overflow-y-auto space-y-4">
+                <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <h4 class="text-xs font-bold text-blue-900 uppercase tracking-wider mb-3 pb-2 border-b border-blue-200">Request Details</h4>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <span class="text-xs font-bold text-gray-600 uppercase block mb-1">CDE Name</span>
+                            <span class="text-sm font-semibold text-gray-900" x-text="modalData['CDE name'] || modalData['cde_name'] || '-'"></span>
+                        </div>
+                        <div>
+                            <span class="text-xs font-bold text-gray-600 uppercase block mb-1">Report Name</span>
+                            <span class="text-sm font-semibold text-gray-900" x-text="modalData['Report name'] || '-'"></span>
+                        </div>
+                        <div class="col-span-2">
+                            <span class="text-xs font-bold text-gray-600 uppercase block mb-1">File Location</span>
+                            <span class="text-xs font-mono text-gray-700 break-all" x-text="modalData['file'] || '-'"></span>
+                        </div>
                     </div>
-                </template>
+                </div>
+
+                <div class="bg-red-50 border border-red-200 rounded-lg p-4">
+                    <h4 class="text-xs font-bold text-red-900 uppercase tracking-wider mb-3 pb-2 border-b border-red-200">Current System / Instance</h4>
+                    <div class="grid grid-cols-4 gap-4">
+                        <div>
+                            <span class="text-xs font-bold text-gray-600 uppercase block mb-1">App Code</span>
+                            <span class="text-sm font-bold font-mono text-red-700" x-text="modalData['Current app code'] || '-'"></span>
+                        </div>
+                        <div>
+                            <span class="text-xs font-bold text-gray-600 uppercase block mb-1">App Name</span>
+                            <span class="text-sm font-semibold text-gray-900" x-text="modalData['Current app name'] || '-'"></span>
+                        </div>
+                        <div>
+                            <span class="text-xs font-bold text-gray-600 uppercase block mb-1">Table/File</span>
+                            <span class="text-sm font-mono text-gray-800 break-all" x-text="modalData['Current table/file name'] || '-'"></span>
+                        </div>
+                        <div>
+                            <span class="text-xs font-bold text-gray-600 uppercase block mb-1">Column/Field</span>
+                            <span class="text-sm font-mono text-gray-800 break-all" x-text="modalData['Current column/field name'] || '-'"></span>
+                        </div>
+
+                        <div class="col-span-4 grid grid-cols-4 gap-4">
+                            <div>
+                                <span class="text-xs font-bold text-gray-600 uppercase block mb-1">Manual / Derived</span>
+                                <span class="text-sm font-semibold text-gray-900" x-text="modalData['Manually entered/Derived'] || 'NA'"></span>
+                            </div>
+                            <div>
+                                <span class="text-xs font-bold text-gray-600 uppercase block mb-1">Created / Sourced</span>
+                                <span class="text-sm font-semibold text-gray-900" x-text="modalData['Created/Sourced'] || '-'"></span>
+                            </div>
+                            <div>
+                                <span class="text-xs font-bold text-gray-600 uppercase block mb-1">Transformation</span>
+                                <span class="text-sm font-semibold text-gray-900" x-text="modalData['Transformed/Passed Through'] || '-'"></span>
+                            </div>
+                            <div>
+                                <span class="text-xs font-bold text-gray-600 uppercase block mb-1">Filtered</span>
+                                <span class="text-sm font-semibold text-gray-900" x-text="modalData['Filtered'] || '-'"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <h4 class="text-xs font-bold text-green-900 uppercase tracking-wider mb-3 pb-2 border-b border-green-200">Source System</h4>
+                    <div class="grid grid-cols-4 gap-4">
+                        <div>
+                            <span class="text-xs font-bold text-gray-600 uppercase block mb-1">App Code</span>
+                            <span class="text-sm font-bold font-mono text-green-700" x-text="modalData['Source app code'] || '-'"></span>
+                        </div>
+                        <div>
+                            <span class="text-xs font-bold text-gray-600 uppercase block mb-1">App Name</span>
+                            <span class="text-sm font-semibold text-gray-900" x-text="modalData['Source app name'] || '-'"></span>
+                        </div>
+                        <div>
+                            <span class="text-xs font-bold text-gray-600 uppercase block mb-1">Table/File</span>
+                            <span class="text-sm font-mono text-gray-800 break-all" x-text="modalData['Source table/file name'] || '-'"></span>
+                        </div>
+                        <div>
+                            <span class="text-xs font-bold text-gray-600 uppercase block mb-1">Column/Field</span>
+                            <span class="text-sm font-mono text-gray-800 break-all" x-text="modalData['Source column/field name'] || '-'"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                    <h4 class="text-xs font-bold text-gray-700 uppercase tracking-wider mb-3 pb-2 border-b border-gray-200">Additional Metadata</h4>
+                    <div class="grid grid-cols-2 gap-4 text-xs">
+                        <div>
+                            <span class="font-bold text-gray-600 block mb-1">Modification Date</span>
+                            <span class="font-mono text-gray-700" x-text="modalData['modification_date'] || '-'"></span>
+                        </div>
+                        <div>
+                            <span class="font-bold text-gray-600 block mb-1">Column Reference</span>
+                            <span class="font-mono text-gray-700" x-text="modalData['column'] || '-'"></span>
+                        </div>
+                        <div class="col-span-2">
+                            <span class="font-bold text-gray-600 block mb-1">Current Key</span>
+                            <span class="font-mono text-gray-700 break-all" x-text="modalData['current_key'] || '-'"></span>
+                        </div>
+                        <div class="col-span-2">
+                            <span class="font-bold text-gray-600 block mb-1">Source Key</span>
+                            <span class="font-mono text-gray-700 break-all" x-text="modalData['source_key'] || '-'"></span>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
+
 
     <!-- Path & Branches Header -->
     <div class="bg-white shadow rounded-lg p-4 mb-4 border border-gray-200">
@@ -28,7 +126,7 @@
                 <span class="font-bold text-gray-700">Tracing: <span class="text-rbcBlue">{{ cde_name }}</span></span>
                 <span x-show="resumeMode" class="ml-2 bg-yellow-100 text-yellow-800 text-[10px] font-bold px-2 py-0.5 rounded shadow-sm border border-yellow-200">EDIT / REVIEW MODE</span>
             </div>
-            
+
             <div class="flex gap-2">
                 <button x-show="stack.length > 1 || undoHistory.length > 1" @click="undo()" :disabled="loading" :class="loading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-red-200 hover:text-red-700'" class="bg-gray-200 text-gray-700 font-bold py-1 px-3 rounded text-xs transition duration-200">
                     ↶ Undo Step (<span x-text="undoHistory.length - 1"></span> hops)
@@ -38,7 +136,7 @@
                 </button>
             </div>
         </div>
-        
+
         <div class="space-y-1.5 max-h-32 overflow-y-auto mt-2">
             <template x-for="(path, pIdx) in completedPaths" :key="'comp'+pIdx">
                 <div class="flex items-center bg-green-50 p-1 rounded opacity-75 text-[10px] border border-green-100">
@@ -55,7 +153,13 @@
                     <template x-for="(node, index) in [...stack].reverse()" :key="index">
                         <div class="flex items-center">
                             <span x-show="index > 0" class="mx-1 text-blue-300 font-bold">→</span>
-                            <span class="px-2 py-0.5 text-[11px] font-mono font-bold rounded shadow-sm border" :class="index === 0 ? 'bg-yellow-100 border-yellow-400 text-yellow-900 ring-2 ring-yellow-200' : (index === stack.length-1 ? 'bg-rbcBlue text-white border-rbcBlue' : 'bg-white text-gray-800 border-gray-300')" x-text="node.app"></span>
+                            <!-- JUMP TO HOP BUTTON -->
+                            <button type="button" @click="jumpToHop(stack.length - 1 - index)" 
+                                    class="px-2 py-0.5 text-[11px] font-mono font-bold rounded shadow-sm border transition" 
+                                    :class="index === 0 ? 'bg-yellow-100 border-yellow-400 text-yellow-900 ring-2 ring-yellow-200' : 'bg-white text-gray-800 border-gray-300 hover:bg-gray-100 cursor-pointer'" 
+                                    :title="index !== 0 ? 'Click to cut branch and jump back here' : 'Current node'"
+                                    x-text="node.app">
+                            </button>
                         </div>
                     </template>
                 </div>
@@ -72,8 +176,17 @@
         </div>
     </div>
 
+    <!-- NEW: Circular Loop Warning Banner -->
+    <div x-show="hasCircularReference()" style="display: none;" class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4 shadow-sm flex items-center">
+        <svg class="w-6 h-6 mr-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+        <div>
+            <strong class="font-bold">Circular Reference Detected!</strong>
+            <span class="block text-sm">The current application loop maps back to an upstream app/table already present in your active path. To prevent infinite loops, mark this path as a Dead End or manual exit.</span>
+        </div>
+    </div>
+
     <div class="flex flex-1 gap-6 overflow-hidden">
-        <!-- Left Panel: Investigating Node -->
+        <!-- Left Panel -->
         <div class="w-1/3 bg-white shadow rounded-lg p-6 flex flex-col border border-gray-200 relative">
             <div x-show="loading" class="absolute inset-0 bg-white bg-opacity-50 z-10"></div>
             <h2 class="text-lg font-bold text-rbcBlue mb-4 border-b pb-2">Investigating Node</h2>
@@ -87,7 +200,7 @@
             </div>
         </div>
 
-        <!-- Right Panel: Candidates & Dead End -->
+        <!-- Right Panel -->
         <div class="w-2/3 bg-white shadow rounded-lg p-6 overflow-y-auto border border-gray-200 bg-gray-50 relative">
             <div x-show="loading" class="absolute inset-0 bg-white bg-opacity-70 z-10 flex flex-col justify-center items-center">
                 <span class="text-sm font-bold text-rbcBlue animate-pulse">Processing...</span>
@@ -136,12 +249,12 @@
                                 </div>
                                 <p class="text-[10px] text-gray-500 font-bold uppercase">Source File: <span class="text-rbcBlue normal-case tracking-tight" x-text="cand.file_path"></span></p>
                             </div>
-                            
+
                             <div class="mb-3 border-l-4 border-rbcBlue pl-3 py-2 bg-blue-50 text-sm">
                                 <p><span class="font-bold text-[10px] text-gray-600 uppercase">Found Table:</span> <span class="font-mono font-bold text-rbcBlue" x-text="cand.found_table"></span></p>
                                 <p><span class="font-bold text-[10px] text-gray-600 uppercase">Found Column:</span> <span class="font-mono text-gray-800" x-text="cand.found_col"></span></p>
                             </div>
-                            
+
                             <template x-if="cand.raw_rows && cand.raw_rows[0] && (cand.raw_rows[0].match_type.includes('Fuzzy') || cand.raw_rows[0].match_type.includes('Flexible'))">
                                 <div class="mb-3 bg-yellow-50 border border-yellow-200 rounded p-3">
                                     <label class="block text-[10px] font-bold text-yellow-800 uppercase mb-2">⚠️ Fuzzy Match Found - Standardization Output:</label>
@@ -156,14 +269,14 @@
                                         </label>
                                         <label class="flex items-center p-2 border border-yellow-200 rounded cursor-pointer bg-yellow-100 shadow-sm">
                                             <input type="radio" value="concat" x-model="cand.stitchChoice" class="w-4 h-4">
-                                            <span class="ml-3 text-xs"><span class="font-bold text-gray-700">Concatenate:</span> 
+                                            <span class="ml-3 text-xs"><span class="font-bold text-gray-700">Concatenate:</span>
                                             <span class="font-mono text-gray-900" x-text="(cand.raw_rows[0].searched_table === cand.found_table ? cand.found_table : cand.raw_rows[0].searched_table + '/' + cand.found_table) + '.' + (cand.raw_rows[0].searched_col === cand.found_col ? cand.found_col : cand.raw_rows[0].searched_col + '/' + cand.found_col)"></span>
                                             </span>
                                         </label>
                                     </div>
                                 </div>
                             </template>
-                            
+
                             <div class="bg-gray-100 border border-gray-200 rounded p-3 flex justify-between items-center mt-3">
                                 <div>
                                     <p class="text-[10px] text-gray-600 font-bold uppercase mb-1">Source Apps (<span x-text="cand.source_count"></span>):</p>
@@ -173,7 +286,7 @@
                                         </template>
                                     </div>
                                 </div>
-                                
+
                                 <template x-if="resumeMode">
                                     <button @click="resumeAutoResolve(cand)" :disabled="loading" class="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded shadow transition text-sm flex items-center">
                                         <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
@@ -181,7 +294,7 @@
                                     </button>
                                 </template>
                                 <template x-if="!resumeMode">
-                                    <button @click="selectCandidateGroup(cand)" :disabled="loading" class="bg-rbcBlue hover:bg-rbcBlueDark text-white font-bold py-2 px-4 rounded shadow transition text-sm">
+                                    <button @click="selectCandidateGroup(cand)" :disabled="loading || hasCircularReference()" class="bg-rbcBlue hover:bg-rbcBlueDark text-white font-bold py-2 px-4 rounded shadow transition text-sm disabled:opacity-50 disabled:cursor-not-allowed">
                                         Confirm & Trace →
                                     </button>
                                 </template>
@@ -214,7 +327,6 @@
             snapshotState() { return JSON.stringify({ stack: this.stack, pendingBranches: this.pendingBranches, completedPaths: this.completedPaths, currentNode: this.currentNode }); },
 
             initTrace() {
-                // FIXED: Use Jinja's tojson to perfectly inject JSON into JavaScript!
                 let preloadedStack = {{ resume_stack | tojson | safe }};
                 this.pendingBranches = {{ resume_pending | tojson | safe }};
                 this.completedPaths = {{ resume_completed | tojson | safe }};
@@ -230,6 +342,12 @@
             },
 
             isTargetApp(appCode) { return this.targetApps.includes((appCode || "").toUpperCase()); },
+
+            // NEW: Scans the active stack looking for duplicate App/Table/Col fingerprints
+            hasCircularReference() {
+                const keys = this.stack.map(n => `${n.app}|${n.original_table}|${n.original_col}`);
+                return new Set(keys).size !== keys.length;
+            },
 
             async searchCandidates() {
                 this.loading = true;
@@ -252,7 +370,7 @@
 
                 if (cand.stitchChoice === 'searched') return { table: st, col: sc };
                 if (cand.stitchChoice === 'found') return { table: ft, col: fc };
-                
+
                 return {
                     table: (st === ft) ? ft : `${st}/${ft}`,
                     col: (sc === fc) ? fc : `${sc}/${fc}`
@@ -262,23 +380,22 @@
             async resumeAutoResolve(cand) {
                 this.loading = true;
                 let stitched = this.getStitchedValues(cand);
-                
+
                 this.stack[this.stack.length - 1].reconciled_table = stitched.table;
                 this.stack[this.stack.length - 1].reconciled_col = stitched.col;
                 if (cand.raw_rows && cand.raw_rows.length > 0) this.stack[this.stack.length - 1].raw_data = cand.raw_rows[0].raw_row_data;
-                
+
                 let first_src = cand.raw_rows[0];
                 this.stack.push({ app: first_src.next_app, original_table: first_src.next_table, original_col: first_src.next_col, raw_data: first_src.raw_row_data, notes: "Auto-Resolve Resumed" });
 
                 try {
-                    // FIXED: Pass queues to background worker so it doesn't forget branches
                     await fetch('/api/auto_resolve/resume', {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ 
-                            cde_name: this.cde_name, 
+                        body: JSON.stringify({
+                            cde_name: this.cde_name,
                             stack: this.stack,
                             pendingBranches: this.pendingBranches,
-                            completedPaths: this.completedPaths 
+                            completedPaths: this.completedPaths
                         })
                     });
                     window.location.href = '/dashboard';
@@ -287,7 +404,7 @@
 
             selectCandidateGroup(cand) {
                 let stitched = this.getStitchedValues(cand);
-                
+
                 this.stack[this.stack.length - 1].reconciled_table = stitched.table;
                 this.stack[this.stack.length - 1].reconciled_col = stitched.col;
                 this.stack[this.stack.length - 1].report_name = cand.report_name;
@@ -357,18 +474,27 @@
                     this.searchCandidates();
                 }
             },
-            
+
+            // NEW: Truncate current stack and jump backward to a clicked Hop
+            jumpToHop(index) {
+                if (index === this.stack.length - 1) return; // Do nothing if already on the current active node
+                this.undoHistory.push(this.snapshotState());
+                
+                this.stack = this.stack.slice(0, index + 1);
+                this.currentNode = { ...this.stack[this.stack.length - 1] };
+                this.searchCandidates();
+            },
+
             async saveMidway() {
                 this.loading = true;
                 try {
                     let currentStack = [...this.stack];
                     currentStack.push(this.currentNode);
-                    
-                    // FIXED: Pass the entire workspace state context
+
                     await fetch('/api/save_midway', {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ 
-                            cde_name: this.cde_name, 
+                        body: JSON.stringify({
+                            cde_name: this.cde_name,
                             stack: currentStack,
                             pendingBranches: this.pendingBranches,
                             completedPaths: this.completedPaths

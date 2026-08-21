@@ -48,42 +48,29 @@ def get_state_file(project_name):
 
 def make_json_serializable(obj):
     """Convert pandas/numpy types to JSON-serializable formats"""
-    # 1. Unpack dictionaries first
     if isinstance(obj, dict):
         return {str(k): make_json_serializable(v) for k, v in obj.items()}
-    
-    # 2. Unpack lists, tuples, and numpy arrays first
     elif isinstance(obj, (list, tuple, set)):
         return [make_json_serializable(item) for item in obj]
-    
-    # 3. Now that we are down to individual values, it's safe to check for NaN
     try:
         if pd.isna(obj):
             return None
     except ValueError:
-        pass # Catch edge cases where pd.isna fails on weird types
-    
-    # 4. Handle Dates
+        pass
     if hasattr(obj, "isoformat"):
         try:
             return obj.isoformat()
         except (ValueError, TypeError):
             return None
-            
-    # 5. Handle standard safe types
     elif isinstance(obj, (int, float, str, bool, type(None))):
         return obj
-        
-    # 6. Fallback for anything else
     else:
         return str(obj)
 
 
 def clean_raw_data_for_json(raw_dict):
-    """Clean raw row data for JSON serialization"""
     if not isinstance(raw_dict, dict):
         return raw_dict
-
     cleaned = {}
     for k, v in raw_dict.items():
         if pd.isna(v):
@@ -180,7 +167,7 @@ def index():
 @app.route("/set_project", methods=["POST"])
 def set_project():
     project_name = request.form.get("project_name", "").strip()
-    project_name = re.sub(r"[^a-zA-Z0-9_\- ]", "", project_name)  # Sanitize
+    project_name = re.sub(r"[^a-zA-Z0-9_\- ]", "", project_name)
     if project_name:
         session["active_project"] = project_name
         get_project_dir(project_name, "uploads")
@@ -380,19 +367,22 @@ def api_retrace():
     )
 
     with file_lock:
-        df_done = pd.read_excel(cde_path, sheet_name="Done", engine="openpyxl")
-        df_done = df_done[
-            ~(
-                (df_done["CDE name"] == cde_name)
-                & (df_done["Current app code"] == app_code)
-                & (df_done["Current table/file name"] == table)
-                & (df_done["Current column/field name"] == col)
-            )
-        ]
-        with pd.ExcelWriter(
-            cde_path, engine="openpyxl", mode="a", if_sheet_exists="replace"
-        ) as writer:
-            df_done.to_excel(writer, sheet_name="Done", index=False)
+        if os.path.exists(cde_path):
+            xls = pd.ExcelFile(cde_path, engine="openpyxl")
+            if "Done" in xls.sheet_names:
+                df_done = pd.read_excel(xls, sheet_name="Done").fillna("")
+                df_done = df_done[
+                    ~(
+                        (df_done["CDE name"] == cde_name)
+                        & (df_done["Current app code"] == app_code)
+                        & (df_done["Current table/file name"] == table)
+                        & (df_done["Current column/field name"] == col)
+                    )
+                ]
+                with pd.ExcelWriter(
+                    cde_path, engine="openpyxl", mode="a", if_sheet_exists="replace"
+                ) as writer:
+                    df_done.to_excel(writer, sheet_name="Done", index=False)
 
     delete_state_for_key(project, f"{cde_name}|{app_code}|{table}|{col}")
     return jsonify({"status": "success"})
@@ -410,32 +400,30 @@ def trace(cde_name, app_code, table_name, column_name):
 
     state = load_state(project)
     resume_data = state.get(key, {})
-    
-    # We pass the raw Python lists to the template!
+
     resume_stack = resume_data.get("stack", [])
     resume_pending = resume_data.get("pendingBranches", [])
     resume_completed = resume_data.get("completedPaths", [])
 
     return render_template(
-        "trace.html", cde_name=cde_name, app_code=app_code, table_name=table_name, column_name=column_name, 
+        "trace.html", cde_name=cde_name, app_code=app_code, table_name=table_name, column_name=column_name,
         target_apps=target_apps, resume_auto=resume_auto,
         resume_stack=resume_stack, resume_pending=resume_pending, resume_completed=resume_completed
     )
 
-# --- NEW: SAVE MIDWAY ---
 @app.route("/api/save_midway", methods=["POST"])
 def save_midway():
     project = session['active_project']
     data = request.json
     cde_name, stack = data["cde_name"], data["stack"]
     target_key = f"{cde_name}|{stack[0]['app']}|{stack[0]['original_table']}|{stack[0]['original_col']}"
-    
+
     update_state_for_key(project, target_key, {
-        "status": "NEEDS_REVIEW", 
-        "stack": stack, 
+        "status": "NEEDS_REVIEW",
+        "stack": stack,
         "pendingBranches": data.get("pendingBranches", []),
         "completedPaths": data.get("completedPaths", []),
-        "reason": "Midway Save by User (Paused)", 
+        "reason": "Midway Save by User (Paused)",
         "timestamp": str(datetime.now())
     })
     return jsonify({"status": "success"})
@@ -799,6 +787,11 @@ def save_lineage():
 
 
 def process_instance_background(project_name, cde_name, target_key, initial_raw_data=None):
+    """
+    NEW: Breadth-First Search (BFS) Auto-Resolve Pathfinder.
+    Explores up to Top 5 candidates per hop. Picks the final path that hits the MOST target_apps.
+    Handles circular loops, auto-aborts if User clicked Reset in the UI.
+    """
     try:
         cde_path = os.path.join(get_project_dir(project_name, 'uploads'), "reporting_layers.xlsx")
 
@@ -809,7 +802,8 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
         target_apps = []
         for _, row in df[df["CDE name"] == cde_name].iterrows():
             target_str = str(row.get("Target App Codes", ""))
-            if target_str.lower() != "nan": target_apps.extend([t.strip().upper() for t in target_str.split(",") if t.strip()])
+            if target_str.lower() != "nan": 
+                target_apps.extend([t.strip().upper() for t in target_str.split(",") if t.strip()])
 
         with file_lock:
             state = load_state(project_name)
@@ -822,50 +816,95 @@ def process_instance_background(project_name, cde_name, target_key, initial_raw_
             _, app_code, table, col = target_key.split("|")
             stack = [{"app": app_code, "original_table": table, "original_col": col, "reconciled_table": table, "reconciled_col": col, "raw_data": initial_raw_data or {}}]
 
-        update_state_for_key(project_name, target_key, {"status": "PROCESSING", "stack": stack, "pendingBranches": pending_branches, "completedPaths": completed_paths, "timestamp": str(datetime.now())})
+        update_state_for_key(project_name, target_key, {"status": "PROCESSING", "stack": stack, "timestamp": str(datetime.now())})
 
         stacks_to_process = [stack] + pending_branches
+        finished_paths = completed_paths
+        MAX_DEPTH = 15
 
         while stacks_to_process:
+            # ABORT CHECK: If user clicked reset, state is missing or Pending. Gracefully exit thread.
+            curr_state = load_state(project_name)
+            if target_key not in curr_state or curr_state[target_key].get("status") not in ["PROCESSING", "NEEDS_REVIEW"]:
+                return
+
             current_stack = stacks_to_process.pop(0)
             current_node = current_stack[-1]
 
+            # LOOP DETECTION & LIMITS
+            ancestor_keys = [f"{n['app']}|{n.get('original_table')}|{n.get('original_col')}" for n in current_stack[:-1]]
+            curr_key = f"{current_node['app']}|{current_node.get('original_table')}|{current_node.get('original_col')}"
+            
+            if curr_key in ancestor_keys or len(current_stack) > MAX_DEPTH:
+                current_stack[-1]["notes"] = "Circular Loop Detected" if curr_key in ancestor_keys else "Max Depth Reached"
+                finished_paths.append({"stack": current_stack, "is_dead_end": True})
+                continue
+
+            # SEARCH (Score automatically accounts for historical file memory usage!)
             candidates = execute_search_api_logic(project_name, cde_name, current_node["app"], current_node.get("original_table", current_node.get("reconciled_table")), current_node.get("original_col", current_node.get("reconciled_col")), target_apps)
 
-            if len(candidates) == 0:
-                reason = "End of Discovered Lineage (Dead End). Please confirm or Manually Link."
-                update_state_for_key(project_name, target_key, {"status": "NEEDS_REVIEW", "stack": current_stack, "pendingBranches": stacks_to_process, "completedPaths": completed_paths, "reason": reason, "timestamp": str(datetime.now())})
-                return
+            if not candidates:
+                current_stack[-1]["notes"] = "Dead End (End of Discovered Lineage)"
+                finished_paths.append({"stack": current_stack, "is_dead_end": True})
+                continue
 
-            best_cand = candidates[0]
+            # TOP N EXPLORATION: Explore up to 5 best options concurrently
+            top_candidates = candidates[:5]
+            
+            for cand in top_candidates:
+                track_file_usage(project_name, cand.get("file_path"))
+                
+                for src in cand["raw_rows"]:
+                    new_stack = copy.deepcopy(current_stack)
+                    new_stack[-1]["reconciled_table"] = cand["found_table"]
+                    new_stack[-1]["reconciled_col"] = src.get("found_col") or current_node.get("original_col", "")
+                    new_stack[-1]["raw_data"] = src["raw_row_data"]
+                    new_stack[-1]["cand_score"] = cand.get("score", 0)
 
-            if best_cand["match_type"] != "Exact Match" or len(candidates) > 1:
-                reason = f"{best_cand['match_type']} or Multiple Files detected. Human review required to confirm."
-                update_state_for_key(project_name, target_key, {"status": "NEEDS_REVIEW", "stack": current_stack, "pendingBranches": stacks_to_process, "completedPaths": completed_paths, "reason": reason, "timestamp": str(datetime.now())})
-                return
+                    next_app = src["next_app"]
+                    new_node = {
+                        "app": next_app, 
+                        "original_table": src["next_table"], 
+                        "original_col": src["next_col"], 
+                        "reconciled_table": src["next_table"], 
+                        "reconciled_col": src["next_col"], 
+                        "raw_data": src["raw_row_data"]
+                    }
+                    new_stack.append(new_node)
 
-            track_file_usage(project_name, best_cand.get("file_path"))
+                    # Win condition check
+                    if next_app in target_apps:
+                        new_stack[-1]["notes"] = "Target Reached (Auto-Resolved)"
+                        finished_paths.append({"stack": new_stack, "is_dead_end": False})
+                    else:
+                        stacks_to_process.append(new_stack)
 
-            for src in best_cand["raw_rows"]:
-                new_stack = copy.deepcopy(current_stack)
-                new_stack[-1]["reconciled_table"] = best_cand["found_table"]
-                new_stack[-1]["reconciled_col"] = src["found_col"] if src.get("found_col") else current_node.get("original_col", "")
-                new_stack[-1]["raw_data"] = src["raw_row_data"]
-
-                next_app = src["next_app"]
-                new_node = {"app": next_app, "original_table": src["next_table"], "original_col": src["next_col"], "reconciled_table": src["next_table"], "reconciled_col": src["next_col"], "raw_data": src["raw_row_data"]}
-                new_stack.append(new_node)
-
-                if next_app in target_apps:
-                    new_stack[-1]["notes"] = "Target Reached (Auto-Resolved)"
-                    completed_paths.append({"stack": new_stack, "is_dead_end": False})
-                else:
-                    stacks_to_process.append(new_stack)
-
-        for path_dict in completed_paths:
-            write_lineage_to_files(project_name, cde_name, path_dict["stack"], path_dict["is_dead_end"])
-
-        update_state_for_key(project_name, target_key, {"status": "RESOLVED", "stack": current_stack, "timestamp": str(datetime.now())})
+        if finished_paths:
+            # PATH SCORING: 1. Max Targets Hit, 2. Shortest Path Length, 3. Highest Total Candidate Match Confidence
+            def score_path(p_dict):
+                stk = p_dict["stack"]
+                targets_hit = sum(1 for n in stk if n["app"] in target_apps)
+                path_len = len(stk)
+                total_cand_score = sum(n.get("cand_score", 0) for n in stk)
+                return (targets_hit, -path_len, total_cand_score)
+                
+            best_path_dict = max(finished_paths, key=score_path)
+            
+            # Persist best lineage and mark RESOLVED (Completed). User can 'Edit Trace' to tweak the winner.
+            write_lineage_to_files(project_name, cde_name, best_path_dict["stack"], best_path_dict["is_dead_end"])
+            
+            update_state_for_key(project_name, target_key, {
+                "status": "RESOLVED", 
+                "stack": best_path_dict["stack"], 
+                "timestamp": str(datetime.now())
+            })
+        else:
+            update_state_for_key(project_name, target_key, {
+                "status": "NEEDS_REVIEW", 
+                "stack": stack, 
+                "reason": "No valid paths found by engine.",
+                "timestamp": str(datetime.now())
+            })
 
     except Exception as e:
         error_msg = f"System Error: {str(e)}"
@@ -944,8 +983,8 @@ def resume_auto_resolve():
         track_file_usage(project, stack[-1]["raw_data"]["file"])
 
     update_state_for_key(project, target_key, {
-        "status": "PROCESSING", 
-        "stack": stack, 
+        "status": "PROCESSING",
+        "stack": stack,
         "pendingBranches": data.get("pendingBranches", []),
         "completedPaths": data.get("completedPaths", []),
         "timestamp": str(datetime.now())
@@ -1112,7 +1151,6 @@ def api_graph(cde_name):
         return jsonify({"error": str(e)}), 500
 
 
-# --- NEW: TOOLS ROUTE ---
 @app.route("/tools")
 def tools():
     project = session.get("active_project")
@@ -1126,15 +1164,12 @@ def tools():
 
 @app.route("/api/tools/<action>", methods=["POST"])
 def execute_tool(action):
-    # This is a placeholder for where you plug in your future Python scripts!
-    # request.form will hold the data from the frontend forms.
     return jsonify(
         {
             "status": "success",
             "message": f"{action.capitalize()} script executed successfully!",
         }
     )
-
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
